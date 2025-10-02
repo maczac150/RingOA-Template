@@ -1,0 +1,11 @@
+# Build files
+data
+out/
+.vscode/
+
+# Third party libraries
+thirdparty/*
+
+# Exclude the getCryptoTools.py and getRingOA.py scripts from being ignored
+!thirdparty/getCryptoTools.py
+!thirdparty/getRingOA.py
