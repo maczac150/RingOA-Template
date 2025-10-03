@@ -61,7 +61,7 @@ def compute_build_type(main_args):
     if "--debug" in main_args or "--Debug" in main_args:
         return "Debug"
     if "--profile" in main_args or "--Profile" in main_args:
-        return "Profile"
+        return "RelWithDebInfo"
     return "Release"
 
 
@@ -108,7 +108,7 @@ def create_data_dirs():
 
 
 # ===== Setup Phase =====
-def Setup(par, *, create_project_dirs=False):
+def Setup(par, main_args, cmake_args, *, create_project_dirs=False, ringoa_only=False):
     require("git")
     require("cmake")
 
@@ -118,15 +118,23 @@ def Setup(par, *, create_project_dirs=False):
         print("Error: Could not find 'thirdparty/getRingOA'.")
         sys.exit(1)
 
-    print("== Setup: cryptoTools, Boost & RingOA ==")
-    # getRingOA 側で cryptoTools もまとめて処理してくれる
+    debug = has_flag(main_args, "--debug")
+    use_sudo = has_flag(main_args, "--sudo")
+
+    if ringoa_only:
+        print("== Setup: RingOA only ==")
+    else:
+        print("== Setup: cryptoTools, Boost & RingOA ==")
+
     getRingOA.getRingOA(
         par=par,
-        debug=False,
-        use_sudo=False,
+        debug=debug,
+        use_sudo=use_sudo,
+        ringoa_only=ringoa_only,
+        extra_cmake_args=cmake_args,
     )
 
-    if create_project_dirs:
+    if create_project_dirs and not ringoa_only:
         print("== Setup: Creating project data directories ==")
         create_data_dirs()
 
@@ -198,6 +206,7 @@ Usage:
 
 Options:
   --setup             Fetch/build/install third-party deps (cryptoTools/Boost/RingOA) and create project data dirs.
+  --setup-ringoa      Fetch/build/install RingOA only (skip cryptoTools/Boost).
   --install           Run 'cmake --install' using CMake's default prefix (e.g. /usr/local).
   --install=PATH      Configure with -DCMAKE_INSTALL_PREFIX=PATH, then run 'cmake --install'.
   --sudo              Use sudo for the install step.
@@ -209,6 +218,7 @@ Options:
 
 Examples:
   python build.py --setup
+  python build.py --setup-ringoa
   python build.py --par=8
   python build.py --install                    # install into default prefix (may need --sudo)
   python build.py --install=$HOME/.local       # install into a custom prefix
@@ -228,7 +238,9 @@ def main(project_name):
     par = get_parallel(main_args)
 
     if has_flag(main_args, "--setup"):
-        Setup(par, create_project_dirs=True)
+        Setup(par, main_args, cmake_args, create_project_dirs=True)
+    elif has_flag(main_args, "--setup-ringoa"):
+        Setup(par, main_args, cmake_args, ringoa_only=True)
     else:
         Build(project_name, main_args, cmake_args, par)
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 cmake_policy(SET CMP0167 OLD)
 
-project(SampleProject LANGUAGES CXX)
+project(SampleProject VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,43 +27,22 @@ set(THIRD_PARTY_DIR ${CMAKE_SOURCE_DIR}/thirdparty)
 find_package(RingOA CONFIG REQUIRED HINTS ${THIRD_PARTY_DIR}/unix)
 
 # =========================
-# Build Type & Flags
+# Build type
 # =========================
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Release")
+  set(CMAKE_BUILD_TYPE "Release")
 endif()
-
-if(NOT CMAKE_BUILD_TYPE MATCHES "Debug|Release|Profile")
-    message(FATAL_ERROR "Invalid build type: ${CMAKE_BUILD_TYPE}. Supported types are Debug, Release, and Profile.")
-endif()
-
-if(CMAKE_BUILD_TYPE MATCHES Release)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -march=native -flto -funroll-loops")
-elseif(CMAKE_BUILD_TYPE MATCHES Debug)
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Og -g -Wall -Wextra")
-    add_compile_definitions(USE_FIXED_RANDOM_SEED)
-elseif(CMAKE_BUILD_TYPE MATCHES Profile)
-    # For gprof or valgrind
-    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pg -O2 -g -flto -fno-omit-frame-pointer")
-    # For uProf
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -g -fno-omit-frame-pointer -march=native")
+if(NOT CMAKE_BUILD_TYPE MATCHES "Debug|Release|RelWithDebInfo")
+  message(FATAL_ERROR "Invalid build type: ${CMAKE_BUILD_TYPE}. Use Debug, Release, or RelWithDebInfo.")
 endif()
 
 # =========================
-# Logging Level
+# Notes about LOG/SEED
 # =========================
-if(NOT DEFINED LOG_LEVEL)
-    if(CMAKE_BUILD_TYPE MATCHES Release)
-        set(LOG_LEVEL 4) # INFO
-        set(USE_FIXED_RANDOM_SEED 0)
-    elseif(CMAKE_BUILD_TYPE MATCHES Debug)
-        set(LOG_LEVEL 5) # DEBUG
-        add_compile_definitions(USE_FIXED_RANDOM_SEED)
-    elseif(CMAKE_BUILD_TYPE MATCHES Profile)
-        set(LOG_LEVEL 0) # NONE
-    endif()
-endif()
-add_compile_definitions(LOG_LEVEL=${LOG_LEVEL})
+# Do NOT define LOG_LEVEL / USE_FIXED_RANDOM_SEED here.
+# Inherit RingOA's PUBLIC definitions. If you MUST override:
+#   - Prefer passing at configure time:  cmake -DLOG_LEVEL=3 -DUSE_FIXED_RANDOM_SEED=0 ...
+#   - Or (not recommended) redefine on your target with target_compile_definitions().
 
 
 # =========================
@@ -85,9 +64,6 @@ message(STATUS "  Binary Directory          : ${CMAKE_CURRENT_BINARY_DIR}")
 message(STATUS "[Libraries]")
 message(STATUS "  cryptoTools Directory     : ${cryptoTools_DIR}")
 message(STATUS "  RingOA Directory          : ${RingOA_DIR}")
-message(STATUS "[Settings]")
-message(STATUS "  LOG_LEVEL                 : ${LOG_LEVEL}")
-message(STATUS "--------------------------------------------")
 
 # =========================
 # Subdirectories

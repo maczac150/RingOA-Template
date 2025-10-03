@@ -17,29 +17,40 @@ def pyexe():
     return shutil.which("python3") or shutil.which("python") or "python3"
 
 
-def getRingOA(par=None, debug=False, use_sudo=False):
+def getRingOA(par=None, debug=False, use_sudo=False, ringoa_only=False, extra_cmake_args=None):
+    """
+    Setup RingOA (and optionally cryptoTools/Boost).
+    - par: parallel jobs
+    - debug: debug build
+    - use_sudo: sudo for install
+    - ringoa_only: if True, skip cryptoTools/Boost setup
+    - extra_cmake_args: list of args passed after '--' directly to cmake configure
+    """
     par = par or os.cpu_count()
     cwd = Path(__file__).resolve().parent
     unix_prefix = cwd / "unix"
 
     # ---------------------------
-    # 1. cryptoTools & Boost setup
+    # 1. cryptoTools & Boost setup (unless ringoa_only)
     # ---------------------------
-    try:
-        import thirdparty.getCryptoTools as getCryptoTools
-    except ImportError:
-        print("Error: getCryptoTools.py not found in thirdparty/")
-        sys.exit(1)
+    if not ringoa_only:
+        try:
+            import thirdparty.getCryptoTools as getCryptoTools
+        except ImportError:
+            print("Error: getCryptoTools.py not found in thirdparty/")
+            sys.exit(1)
 
-    print("== Setup: cryptoTools & Boost (before RingOA) ==")
-    getCryptoTools.getCryptoTools(
-        par=par,
-        build_cryptoTools=True,
-        setup_boost=True,
-        setup_relic=False,
-        debug=debug,
-        use_sudo=use_sudo,
-    )
+        print("== Setup: cryptoTools & Boost (before RingOA) ==")
+        getCryptoTools.getCryptoTools(
+            par=par,
+            build_cryptoTools=True,
+            setup_boost=True,
+            setup_relic=False,
+            debug=debug,
+            use_sudo=use_sudo,
+        )
+    else:
+        print("== Skipping cryptoTools/Boost setup (ringoa_only mode) ==")
 
     # ---------------------------
     # 2. RingOA fetch
@@ -66,6 +77,9 @@ def getRingOA(par=None, debug=False, use_sudo=False):
         base.append("--debug")
     if use_sudo:
         base.append("--sudo")
+    if extra_cmake_args:
+        base.append("--")
+        base.extend(extra_cmake_args)
 
     run(base, cwd=repo_dir)
 
