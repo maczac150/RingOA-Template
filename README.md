@@ -11,8 +11,6 @@
 - `cBioLab` 内の **mpc チーム** に所属している必要があります。  
 - `u-tmk` アカウント配下の `RingOA-dev` リポジトリの Collaborators に追加されている必要があります。  
 
----
-
 ## セットアップ & ビルド
 
 ```bash
@@ -26,8 +24,6 @@ python build.py --setup
 # プロジェクト本体をビルド
 python build.py
 ```
-
----
 
 ## 実行方法
 
@@ -70,8 +66,6 @@ python build.py
   python build.py --setup-ringoa --debug -- -DLOG_LEVEL=6
   ```
 
----
-
 ### プロジェクト本体のビルド
 
 - **通常のビルド（Release モード）**
@@ -92,42 +86,12 @@ python build.py
 > ```
 > これは CMake のキャッシュが原因で変更が反映されない場合があるためです。
 
----
-  
 ### ヘルプ表示
-
 詳細なオプションは以下で確認できます。
 
 ```bash
 python build.py --help
 ```
-
----
-
-## RingOAのログレベル
-
-`-DLOG_LEVEL=N` でビルド時のログ出力レベルを指定できます。  
-数字が大きいほど詳細なログが出力されます。
-
-| レベル | 定数              | 説明                         |
-| ------ | ----------------- | ---------------------------- |
-| 0      | `LOG_LEVEL_NONE`  | ログを出力しない             |
-| 1      | `LOG_LEVEL_FATAL` | 致命的なエラーのみ出力       |
-| 2      | `LOG_LEVEL_ERROR` | エラーを出力                 |
-| 3      | `LOG_LEVEL_WARN`  | 警告を出力                   |
-| 4      | `LOG_LEVEL_INFO`  | 情報メッセージ（デフォルト） |
-| 5      | `LOG_LEVEL_DEBUG` | デバッグ用の詳細ログを出力   |
-| 6      | `LOG_LEVEL_TRACE` | トレースレベル（最も詳細）   |
-
-例:  
-
-```bash
-python build.py --setup-ringoa --debug -- -DLOG_LEVEL=6
-```
-
-この場合、`TRACE` まで全てのログが出力されます。
-
----
 
 ## 実装の追加方法
 
@@ -135,7 +99,6 @@ python build.py --setup-ringoa --debug -- -DLOG_LEVEL=6
 - 新しいディレクトリを作成してモジュールを追加する場合は、プロジェクトの `CMakeLists.txt` に `add_subdirectory(your_directory)` を追記してください。
 
 ---
-
 
 ## ディレクトリ構成
 
@@ -150,8 +113,6 @@ RingOA-Template/
     ├── getCryptoTools.py # cryptoTools の取得スクリプト
     └── getRingOA.py      # RingOA 実装の取得スクリプト
 ```
-
----
 
 ## スクリプトの説明
 
@@ -192,4 +153,26 @@ cryptoTools および依存ライブラリ (Boost) を取得・ビルドする�
    - CMake オプションを付与してビルド。  
    - インストール先は `thirdparty/unix/` 以下。  
 
----
+
+## RingOAのログレベル
+
+`-DLOG_LEVEL=N` でビルド時のログ出力レベルを指定できます。  
+数字が大きいほど詳細なログが出力されます。
+
+| レベル | 定数              | 説明                         |
+| ------ | ----------------- | ---------------------------- |
+| 0      | `LOG_LEVEL_NONE`  | ログを出力しない             |
+| 1      | `LOG_LEVEL_FATAL` | 致命的なエラーのみ出力       |
+| 2      | `LOG_LEVEL_ERROR` | エラーを出力                 |
+| 3      | `LOG_LEVEL_WARN`  | 警告を出力                   |
+| 4      | `LOG_LEVEL_INFO`  | 情報メッセージ（デフォルト） |
+| 5      | `LOG_LEVEL_DEBUG` | デバッグ用の詳細ログを出力   |
+| 6      | `LOG_LEVEL_TRACE` | トレースレベル（最も詳細）   |
+
+例:  
+
+```bash
+python build.py --setup-ringoa --debug -- -DLOG_LEVEL=6
+```
+
+この場合、`TRACE` まで全てのログが出力されます。
