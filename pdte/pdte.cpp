@@ -8,6 +8,7 @@
 #include <vector>
 #include <memory>
 #include <stdexcept>
+#include <limits>
 
 #include <cryptoTools/Common/TestCollection.h>
 
@@ -68,10 +69,9 @@ constexpr uint64_t kFeatureCount = 4;
 constexpr uint64_t kThresholdOffset  = 0;
 constexpr uint64_t kLeftOffset       = kThresholdOffset + kNodeCount;
 constexpr uint64_t kRightOffset      = kLeftOffset + kNodeCount;
-constexpr uint64_t kFeatureIdOffset  = kRightOffset + kNodeCount;
-constexpr uint64_t kLabelOffset      = kFeatureIdOffset + kNodeCount;
-constexpr uint64_t kFeatureOffset    = kLabelOffset + kNodeCount;
-constexpr uint64_t kLayoutEntries    = kFeatureOffset + kFeatureCount;
+constexpr uint64_t kFeatureValOffset = kRightOffset + kNodeCount;
+constexpr uint64_t kLabelOffset      = kFeatureValOffset + kNodeCount;
+constexpr uint64_t kLayoutEntries    = kLabelOffset + kNodeCount;
 
 // 平文の決定木
 struct TreeNodePlain {
@@ -85,14 +85,24 @@ struct TreeNodePlain {
 // 後続でMCPの結果と突き合わせ
 uint64_t EvaluateTreePlain(const std::vector<TreeNodePlain> &tree, const std::vector<uint64_t> &features) {
     uint64_t idx = 0;
+    Logger::InfoLog(LOC, "[PlainEval] Starting with idx=" + ToString(idx));
     for (uint32_t depth = 0; depth < kTreeDepth; ++depth) {
         const auto &node = tree[idx];
         uint64_t     fid = node.feature_id % features.size();
         uint64_t     fv  = features[fid];
-        idx              = (fv < node.threshold) ? node.left : node.right;
-        if (idx >= tree.size())
+        bool         cmp = (fv < node.threshold);
+        uint64_t     next_idx = cmp ? node.left : node.right;
+        Logger::InfoLog(LOC, "[PlainEval][depth " + ToString(depth) + "] idx=" + ToString(idx) + 
+                        " fid=" + ToString(fid) + " fv=" + ToString(fv) + " thr=" + ToString(node.threshold) + 
+                        " cmp=" + ToString(cmp) + " left=" + ToString(node.left) + " right=" + ToString(node.right) + 
+                        " next_idx=" + ToString(next_idx) + " label=" + ToString(node.label));
+        idx = next_idx;
+        if (idx >= tree.size()) {
+            Logger::InfoLog(LOC, "[PlainEval] idx >= tree.size(), clamping to " + ToString(tree.size() - 1));
             idx = tree.size() - 1;
+        }
     }
+    Logger::InfoLog(LOC, "[PlainEval] Final idx=" + ToString(idx) + " label=" + ToString(tree[idx].label));
     return tree[idx].label;
 }
 
@@ -118,8 +128,9 @@ void LoadIntegerComparisonKey(const std::string &path, IntegerComparisonKey &key
 void Pdte_Offline_Test() {
     Logger::DebugLog(LOC, "Pdte_Offline_Test...");
 
-    RingOaParameters            ringoa_params(13);
-    IntegerComparisonParameters ic_params(16, 1);
+    RingOaParameters ringoa_params(13);
+    uint64_t         ring_bits = ringoa_params.GetParameters().GetInputBitsize();
+    IntegerComparisonParameters ic_params(13, 13);  // Use 13 bits to match RingOA domain
     // SharedOtParameters          shared_params(10);
     uint64_t                    d = ringoa_params.GetParameters().GetInputBitsize();
 
@@ -164,21 +175,28 @@ void Pdte_Offline_Test() {
         tree[i].left       = has_left ? left : i;
         tree[i].right      = has_right ? right : i;
         tree[i].label      = has_left || has_right ? (500 + i) : (900 + i);
+        Logger::InfoLog(LOC, "[TreeGen] node[" + ToString(i) + "] thr=" + ToString(tree[i].threshold) + 
+                        " fid=" + ToString(tree[i].feature_id) + " left=" + ToString(tree[i].left) + 
+                        " right=" + ToString(tree[i].right) + " label=" + ToString(tree[i].label));
     }
 
     std::vector<uint64_t> features = {4, 1, 7, 9};
+    Logger::InfoLog(LOC, "[TreeGen] features=[" + ToString(features[0]) + ", " + ToString(features[1]) + 
+                    ", " + ToString(features[2]) + ", " + ToString(features[3]) + "]");
     uint64_t              expected = EvaluateTreePlain(tree, features);
+    Logger::InfoLog(LOC, "[TreeGen] Expected result: " + ToString(expected));
 
     std::vector<uint64_t> database(1ULL << d, 0);
     for (uint64_t i = 0; i < kNodeCount; ++i) {
         database[kThresholdOffset + i]  = tree[i].threshold;
         database[kLeftOffset + i]       = tree[i].left;
         database[kRightOffset + i]      = tree[i].right;
-        database[kFeatureIdOffset + i]  = tree[i].feature_id;
+        uint64_t fid = tree[i].feature_id % features.size();
+        database[kFeatureValOffset + i] = features[fid];
         database[kLabelOffset + i]      = tree[i].label;
-    }
-    for (uint64_t i = 0; i < kFeatureCount; ++i) {
-        database[kFeatureOffset + i] = features[i];
+        if (i == 0 || i == 2 || i == 6 || i == 1022) {
+            Logger::InfoLog(LOC, "[DBGen] node[" + ToString(i) + "] fid=" + ToString(fid) + " feature_val=" + ToString(features[fid]) + " stored_at=" + ToString(kFeatureValOffset + i));
+        }
     }
 
     std::array<RepShareVec64, 3> database_sh = rss.ShareLocal(database);
@@ -215,17 +233,18 @@ void Pdte_Offline_Test() {
 }
 
 void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
-    Logger::DebugLog(LOC, "Pdte_Additive_Online_Test...");
+    Logger::SetPrintLog(true);
+    Logger::InfoLog(LOC, "Pdte_Additive_Online_Test...");
+    const bool debug_mode = cmd.isSet("debug") || cmd.isSet("-debug");
     std::vector<RingOaParameters> params_list = {
         RingOaParameters(13),
         // RingOaParameters(15),
         // RingOaParameters(20),
     };
-    IntegerComparisonParameters ic_params(16, 1);
-
     for (const auto &params : params_list) {
         params.PrintParameters();
         uint64_t d  = params.GetParameters().GetInputBitsize();
+        IntegerComparisonParameters ic_params(13, 13);  // Use 13 bits to match RingOA domain
         uint64_t nu = params.GetParameters().GetTerminateBitsize();
         FileIo   file_io;
         ShareIo  sh_io;
@@ -244,6 +263,36 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
         file_io.ReadBinary(db_path, database);
         file_io.ReadBinary(idx_path, index);
         file_io.ReadBinary(expected_path, expected_label);
+        
+        // Reconstruct tree and features for verification
+        std::vector<TreeNodePlain> tree(kNodeCount);
+        std::vector<uint64_t> features(kFeatureCount);
+        for (uint64_t i = 0; i < kNodeCount; ++i) {
+            tree[i].threshold  = database[kThresholdOffset + i];
+            tree[i].left       = database[kLeftOffset + i];
+            tree[i].right      = database[kRightOffset + i];
+            tree[i].feature_id = i % kFeatureCount;
+            tree[i].label      = database[kLabelOffset + i];
+            if (i < kFeatureCount) {
+                features[i] = database[kFeatureValOffset + i];
+            }
+            if (i == 0 || i == 2 || i == 6 || i == 1022) {
+                Logger::InfoLog(LOC, "[DBRead] node[" + ToString(i) + "] fid=" + ToString(tree[i].feature_id) + " feature_val_from_db=" + ToString(database[kFeatureValOffset + i]));
+            }
+        }
+        Logger::InfoLog(LOC, "[OnlineVerify] features=[" + ToString(features[0]) + ", " + ToString(features[1]) + 
+                        ", " + ToString(features[2]) + ", " + ToString(features[3]) + "]");
+        uint64_t recalc_expected = EvaluateTreePlain(tree, features);
+        Logger::InfoLog(LOC, "[OnlineVerify] Recalculated expected: " + ToString(recalc_expected) + 
+                        ", stored expected: " + ToString(expected_label));
+        
+        // Log specific nodes for debugging
+        Logger::InfoLog(LOC, "[NodeDebug] node[28]: thr=" + ToString(tree[28].threshold) + 
+                        " fid=" + ToString(tree[28].feature_id) + " left=" + ToString(tree[28].left) + 
+                        " right=" + ToString(tree[28].right) + " label=" + ToString(tree[28].label));
+        Logger::InfoLog(LOC, "[NodeDebug] node[1022]: thr=" + ToString(tree[1022].threshold) + 
+                        " fid=" + ToString(tree[1022].feature_id) + " left=" + ToString(tree[1022].left) + 
+                        " right=" + ToString(tree[1022].right) + " label=" + ToString(tree[1022].label));
         const uint64_t triple_budget =
             std::max<uint64_t>(1ULL << 22, ic_params.GetInputBitsize() * static_cast<uint64_t>(kTreeDepth) * 4096ULL);
         {
@@ -329,55 +378,72 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
 
                 const uint64_t dcf_in_bits  = ic_params.GetInputBitsize();
                 const uint64_t dcf_out_bits = ic_params.GetOutputBitsize();
-                auto ConvertReplicatedToAdditive = [&](const RepShare64 &share, uint64_t &out) {
-                    if (party_id == 0) {
-                        uint64_t mask_from_p2 = 0;
-                        chls.prev.recv(mask_from_p2);
-                        out = Mod2N(share[0] + mask_from_p2, dcf_in_bits);
-                    } else if (party_id == 1) {
-                        uint64_t mask_from_p2 = 0;
-                        chls.next.recv(mask_from_p2);
-                        out = Mod2N(share[0] + mask_from_p2, dcf_in_bits);
-                    } else {
-                        uint64_t rand_mask = Mod2N(ringoa::GlobalRng::Rand<uint64_t>(), dcf_in_bits);
-                        uint64_t corr      = Mod2N(share[0] - rand_mask, dcf_in_bits);
-                        chls.next.send(rand_mask);
-                        chls.prev.send(corr);
+                auto MaskValue = [](uint64_t value, uint64_t bits) -> uint64_t {
+                    if (bits >= 64)
+                        return value;
+                    uint64_t mask = (bits == 64) ? std::numeric_limits<uint64_t>::max() : ((1ULL << bits) - 1ULL);
+                    return value & mask;
+                };
+                auto ConvertReplicatedToAdditive = [&](const RepShare64 &sh, uint64_t &out) {
+                    if (party_id == 2) {
+                        uint64_t r = MaskValue(ringoa::GlobalRng::Rand<uint64_t>(), dcf_in_bits);
+
+                        // P2 は (x2, x0) を持ってる想定なので sh[0] を x2 として使う
+                        uint64_t x2 = Mod2N(sh[0], dcf_in_bits);
+                        uint64_t masked = Mod2N(x2 - r, dcf_in_bits);
+
+                        chls.next.send(r);        // to P0
+                        chls.prev.send(masked);   // to P1
                         out = 0;
+                    } else if (party_id == 0) {
+                        uint64_t r = 0;
+                        chls.prev.recv(r);        // from P2
+                        out = Mod2N(sh[0] + r, dcf_in_bits);  // P0 の sh[0] は x0
+                    } else { // party_id == 1
+                        uint64_t masked = 0;
+                        chls.next.recv(masked);   // from P2
+                        out = Mod2N(sh[0] + masked, dcf_in_bits); // P1 の sh[0] は x1
                     }
                 };
+
                 auto ConvertSsBitToReplicated = [&](uint64_t local_share, RepShare64 &bit_sh) {
-                    const uint64_t bit_mod = dcf_out_bits;
                     if (party_id == 0) {
-                        uint64_t alpha0 = Mod2N(dcf_out->GenerateRandomValue(), bit_mod);
-                        uint64_t t0     = Mod2N(local_share - alpha0, bit_mod);
-                        chls.next.send(alpha0);
-                        chls.prev.send(t0);
-                        uint64_t alpha2 = 0;
-                        chls.prev.recv(alpha2);
-                        bit_sh[0] = Mod2N(alpha0, d);
-                        bit_sh[1] = Mod2N(alpha2, d);
+                        uint64_t s0 = MaskValue(ringoa::GlobalRng::Rand<uint64_t>(), dcf_out_bits);
+                        chls.next.send(s0);                                   // to P1
+                        uint64_t masked = Mod2N(local_share - s0, dcf_out_bits);
+                        chls.prev.send(masked);                               // to P2
+                        uint64_t s2 = 0;
+                        chls.prev.recv(s2);                                   // from P2
+                        bit_sh[0] = Mod2N(s0, d);
+                        bit_sh[1] = Mod2N(s2, d);
+                        if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P0: local=" + ToString(local_share) + " s0=" + ToString(s0) + " masked=" + ToString(masked) + " s2=" + ToString(s2) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
                     } else if (party_id == 1) {
-                        uint64_t alpha0 = 0;
-                        chls.prev.recv(alpha0);
-                        uint64_t alpha1 = Mod2N(dcf_out->GenerateRandomValue(), bit_mod);
-                        uint64_t t1     = Mod2N(local_share - alpha1, bit_mod);
-                        chls.next.send(alpha1);
-                        chls.next.send(t1);
-                        bit_sh[0] = Mod2N(alpha1, d);
-                        bit_sh[1] = Mod2N(alpha0, d);
+                        uint64_t s0 = 0;
+                        chls.prev.recv(s0);                                   // from P0
+                        uint64_t s1 = MaskValue(ringoa::GlobalRng::Rand<uint64_t>(), dcf_out_bits);
+                        chls.next.send(s1);                                   // to P2
+                        uint64_t masked = Mod2N(local_share - s1, dcf_out_bits);
+                        chls.next.send(masked);                               // to P2
+                        bit_sh[0] = Mod2N(s1, d);
+                        bit_sh[1] = Mod2N(s0, d);
+                        if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P1: local=" + ToString(local_share) + " s0=" + ToString(s0) + " s1=" + ToString(s1) + " masked=" + ToString(masked) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
                     } else {
-                        uint64_t alpha1 = 0;
-                        uint64_t t1     = 0;
-                        chls.prev.recv(alpha1);
-                        chls.prev.recv(t1);
-                        uint64_t t0 = 0;
-                        chls.next.recv(t0);
-                        uint64_t alpha2 = Mod2N(t0 + t1, bit_mod);
-                        chls.next.send(alpha2);
-                        bit_sh[0] = Mod2N(alpha2, d);
-                        bit_sh[1] = Mod2N(alpha1, d);
+                        uint64_t s1 = 0;
+                        chls.prev.recv(s1);                                   // from P1
+                        uint64_t masked_from_p0 = 0;
+                        chls.next.recv(masked_from_p0);                       // from P0
+                        uint64_t masked_from_p1 = 0;
+                        chls.prev.recv(masked_from_p1);                       // from P1
+                        uint64_t s2 = Mod2N(masked_from_p0 + masked_from_p1, dcf_out_bits);
+                        chls.next.send(s2);                                   // to P0
+                        bit_sh[0] = Mod2N(s2, d);
+                        bit_sh[1] = Mod2N(s1, d);
+                        if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P2: s1=" + ToString(s1) + " masked_p0=" + ToString(masked_from_p0) + " masked_p1=" + ToString(masked_from_p1) + " s2=" + ToString(s2) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
                     }
+                };
+
+                auto ShareStr = [&](const RepShare64 &share) {
+                    return "(" + ToString(share[0]) + ", " + ToString(share[1]) + ")";
                 };
 
                 RepShare64 current_idx = index_sh;
@@ -396,37 +462,92 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                     AddConstIdx(current_idx, kRightOffset, right_idx);
                     ObliviousRead(right_idx, right_sh);
 
-                    AddConstIdx(current_idx, kFeatureIdOffset, fid_idx);
-                    ObliviousRead(fid_idx, fid_sh);
-
-                    RepShare64 feature_idx;
-                    AddConstIdx(fid_sh, kFeatureOffset, feature_idx);
+                    RepShare64 feature_val_idx;
+                    AddConstIdx(current_idx, kFeatureValOffset, feature_val_idx);
                     RepShare64 feature_val;
-                    ObliviousRead(feature_idx, feature_val);
+                    ObliviousRead(feature_val_idx, feature_val);
 
                     RepShare64 delta_sh;
                     rss.EvaluateSub(feature_val, thr_sh, delta_sh);
 
                     RepShare64 cmp_bit;
-                    uint64_t delta_part = 0;
+                    uint64_t delta_part  = 0;
+                    uint64_t delta_plain = 0;
+                    uint64_t idx_plain   = 0;
+                    uint64_t thr_plain   = 0;
+                    uint64_t feat_plain  = 0;
+                    if (debug_mode) {
+                        rss.Open(chls, current_idx, idx_plain);
+                        rss.Open(chls, thr_sh, thr_plain);
+                        rss.Open(chls, feature_val, feat_plain);
+                    }
                     ConvertReplicatedToAdditive(delta_sh, delta_part);
+                    if (debug_mode) {
+                        rss.Open(chls, delta_sh, delta_plain);
+                    }
+                    std::string delta_log = "[Pdte][depth " + ToString(depth) + "] idx=" + ShareStr(current_idx) +
+                                            " thr=" + ShareStr(thr_sh) + " feature=" + ShareStr(feature_val) +
+                                            " delta_part=" + ToString(delta_part);
+                    if (debug_mode)
+                        delta_log += " delta_plain=" + ToString(delta_plain) + " idx_plain=" + ToString(idx_plain) +
+                                     " thr_plain=" + ToString(thr_plain) + " feat_plain=" + ToString(feat_plain);
+                    Logger::InfoLog(LOC, delta_log);
 
                     if (party_id < 2) {
                         osuCrypto::Channel &dcf_chl = (party_id == 0) ? chls.next : chls.prev;
                         uint64_t              bit_share = dcf_eval->EvaluateSharedInput(dcf_chl, *dcf_key, delta_part, 0);
+                        // Library returns 1 when delta >= 0, so invert to obtain (feature < threshold).
+                        if (debug_mode)
+                            Logger::InfoLog(LOC, "[DCF] P" + ToString(party_id) + ": delta_part=" + ToString(delta_part) +
+                                                    " bit_share=" + ToString(bit_share));
                         ConvertSsBitToReplicated(bit_share, cmp_bit);
                     } else {
+                        if (debug_mode)
+                            Logger::InfoLog(LOC, "[DCF] P2: not participating in DCF");
                         ConvertSsBitToReplicated(0, cmp_bit);
                     }
+                    RepShare64 one_sh = MakePublicShare(1);
+                    RepShare64 cmp_lt;
+                    rss.EvaluateSub(one_sh, cmp_bit, cmp_lt);
+                    cmp_bit = cmp_lt;
+                    if (debug_mode)
+                        Logger::InfoLog(LOC, "[DCF] inverted cmp_bit -> " + ShareStr(cmp_bit));
 
                     RepShare64 next_idx;
                     rss.EvaluateSelect(chls, right_sh, left_sh, cmp_bit, next_idx);
+                    uint64_t cmp_plain = 0;
+                    uint64_t next_plain = 0;
+                    if (debug_mode) {
+                        rss.Open(chls, cmp_bit, cmp_plain);
+                        rss.Open(chls, next_idx, next_plain);
+                    }
+                    std::string cmp_log = "[Pdte][depth " + ToString(depth) + "] cmp_bit=" + ShareStr(cmp_bit) +
+                                          " left=" + ShareStr(left_sh) + " right=" + ShareStr(right_sh) + " next_idx=" + ShareStr(next_idx);
+                    if (debug_mode)
+                        cmp_log += " cmp_plain=" + ToString(cmp_plain) + " next_plain=" + ToString(next_plain);
+                    Logger::InfoLog(LOC, cmp_log);
                     current_idx = next_idx;
                 }
 
                 RepShare64 label_idx;
                 AddConstIdx(current_idx, kLabelOffset, label_idx);
+                uint64_t final_idx_plain = 0;
+                uint64_t label_idx_plain = 0;
+                if (debug_mode) {
+                    rss.Open(chls, current_idx, final_idx_plain);
+                    rss.Open(chls, label_idx, label_idx_plain);
+                }
                 ObliviousRead(label_idx, label_share);
+                uint64_t final_plain = 0;
+                if (debug_mode) {
+                    rss.Open(chls, label_share, final_plain);
+                }
+                std::string final_log = "[Pdte] final current_idx=" + ShareStr(current_idx) + 
+                                       " label_idx=" + ShareStr(label_idx) + " label_share=" + ShareStr(label_share);
+                if (debug_mode)
+                    final_log += " final_idx_plain=" + ToString(final_idx_plain) + 
+                                " label_idx_plain=" + ToString(label_idx_plain) + " label_plain=" + ToString(final_plain);
+                Logger::InfoLog(LOC, final_log);
 
                 uint64_t local_res = 0;
                 rss.Open(chls, label_share, local_res);
