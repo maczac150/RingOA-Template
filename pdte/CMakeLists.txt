@@ -3,18 +3,17 @@
 # =========================
 
 set(TEST_SOURCES
-  # dpf_pir.cpp
-  oa.cpp
+  pdte.cpp
   main.cpp
 )
 
-add_executable(example ${TEST_SOURCES})
+add_executable(pdte ${TEST_SOURCES})
 
 # Inherit RingOA's compile definitions (LOG_LEVEL / USE_FIXED_RANDOM_SEED)
-target_link_libraries(example PRIVATE RingOA::RingOA)
+target_link_libraries(pdte PRIVATE RingOA::RingOA)
 
-# Per-config compile options for the example target itself
-target_compile_options(example PRIVATE
+# Per-config compile options for the pdte target itself
+target_compile_options(pdte PRIVATE
   $<$<CONFIG:Debug>:-Og -g -Wall -Wextra>
   $<$<CONFIG:RelWithDebInfo>:-O2 -g -fno-omit-frame-pointer -march=native>
   $<$<CONFIG:Release>:-O2 -march=native -flto -funroll-loops>

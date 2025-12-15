@@ -69,3 +69,4 @@ message(STATUS "  RingOA Directory          : ${RingOA_DIR}")
 # Subdirectories
 # =========================
 add_subdirectory(example)
+add_subdirectory(pdte)

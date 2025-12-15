@@ -5,8 +5,7 @@
 #include <random>
 #include <tests_cryptoTools/UnitTests.h>
 
-#include "dpf_pir.h"
-#include "oa.h"
+#include "pdte.h"
 
 namespace test_ringoa {
 
@@ -16,8 +15,8 @@ void RegisterTests(osuCrypto::TestCollection &t) {
     // t.add("DpfPir_Naive_Online_Test", DpfPir_Naive_Online_Test);
     // t.add("DpfPir_Offline_Test", DpfPir_Offline_Test);
     // t.add("DpfPir_Online_Test", DpfPir_Online_Test);
-    t.add("RingOa_Offline_Test", RingOa_Offline_Test);
-    t.add("RingOa_Online_Test", RingOa_Online_Test);
+    t.add("Pdte_Offline_Test", Pdte_Offline_Test);
+    t.add("Pdte_Online_Test", Pdte_Online_Test);
 }
 
 }    // namespace test_ringoa
