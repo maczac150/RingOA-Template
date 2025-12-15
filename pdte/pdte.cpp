@@ -74,8 +74,8 @@ void Pdte_Offline_Test() {
     key_io.SaveKey(key_path + "_1", ringoa_keys[1]);
     key_io.SaveKey(key_path + "_2", ringoa_keys[2]);
 
-    // Generate the decision tree data and sharing
-    // Generate the feature data and sharing
+    // TODO:Generate the decision tree data and sharing
+    // TODO:Generate the feature data and sharing
 
     // Offline setup
     ringoa_gen.OfflineSetUp(3, kTestOSPath);
@@ -133,9 +133,10 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                 eval.OnlineSetUp(party_id, kTestOSPath);
                 rss.OnlineSetUp(party_id, kTestOSPath + "prf");
 
-                // feature vectorのOA
-                // 次のidxを計算
-                // 次のノードのOA
+                // TODO:feature vectorのOblivious Access
+                // TODO:thresholdとのcomparison(Distributed Comparison Function)
+                // TODO:次に進むidxを計算
+                // TODO:次のノード情報のOblivious Access
 
                 // Evaluate
                 RepShare64 result_sh;
