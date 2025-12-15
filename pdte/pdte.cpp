@@ -64,6 +64,7 @@ namespace {
 constexpr uint32_t kTreeDepth    = 10;
 constexpr uint64_t kNodeCount    = 1ULL << kTreeDepth;
 constexpr uint64_t kFeatureCount = 4;
+constexpr uint32_t kRingBits     = 13;
 
 // Layout inside the OA database share:
 constexpr uint64_t kThresholdOffset  = 0;
@@ -128,9 +129,9 @@ void LoadIntegerComparisonKey(const std::string &path, IntegerComparisonKey &key
 void Pdte_Offline_Test() {
     Logger::DebugLog(LOC, "Pdte_Offline_Test...");
 
-    RingOaParameters ringoa_params(13);
+    RingOaParameters ringoa_params(kRingBits);
     uint64_t         ring_bits = ringoa_params.GetParameters().GetInputBitsize();
-    IntegerComparisonParameters ic_params(13, 13);  // Use 13 bits to match RingOA domain
+    IntegerComparisonParameters ic_params(ring_bits, ring_bits);  // Match RingOA domain
     // SharedOtParameters          shared_params(10);
     uint64_t                    d = ringoa_params.GetParameters().GetInputBitsize();
 
@@ -237,14 +238,14 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
     Logger::InfoLog(LOC, "Pdte_Additive_Online_Test...");
     const bool debug_mode = cmd.isSet("debug") || cmd.isSet("-debug");
     std::vector<RingOaParameters> params_list = {
-        RingOaParameters(13),
+        RingOaParameters(kRingBits),
         // RingOaParameters(15),
         // RingOaParameters(20),
     };
     for (const auto &params : params_list) {
         params.PrintParameters();
         uint64_t d  = params.GetParameters().GetInputBitsize();
-        IntegerComparisonParameters ic_params(13, 13);  // Use 13 bits to match RingOA domain
+        IntegerComparisonParameters ic_params(d, d);  // Match RingOA domain
         uint64_t nu = params.GetParameters().GetTerminateBitsize();
         FileIo   file_io;
         ShareIo  sh_io;
