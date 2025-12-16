@@ -66,7 +66,26 @@ constexpr uint64_t kNodeCount    = 1ULL << kTreeDepth;
 constexpr uint64_t kFeatureCount = 4;
 constexpr uint32_t kRingBits     = 13;
 
-// Layout inside the OA database share:
+// feature vectorの要素はフィボナッチ数列とする
+std::vector<uint64_t> BuildFeatureVector() {
+    std::vector<uint64_t> features(kFeatureCount, 0);
+    if (kFeatureCount == 0)
+        return features;
+
+    uint64_t prev = 1;
+    uint64_t curr = 2;
+    features[0]   = prev;
+    for (uint64_t i = 1; i < kFeatureCount; ++i) {
+        features[i] = curr;
+        uint64_t next = prev + curr;
+        prev          = curr;
+        curr          = next;
+    }
+    return features;
+}
+
+// ノード情報を1つの配列に詰め込むため
+// 鍵が1つで済む
 constexpr uint64_t kThresholdOffset  = 0;
 constexpr uint64_t kLeftOffset       = kThresholdOffset + kNodeCount;
 constexpr uint64_t kRightOffset      = kLeftOffset + kNodeCount;
@@ -74,7 +93,7 @@ constexpr uint64_t kFeatureValOffset = kRightOffset + kNodeCount;
 constexpr uint64_t kLabelOffset      = kFeatureValOffset + kNodeCount;
 constexpr uint64_t kLayoutEntries    = kLabelOffset + kNodeCount;
 
-// 平文の決定木
+// 平文の決定木構造
 struct TreeNodePlain {
     uint64_t threshold;
     uint64_t left;
@@ -164,7 +183,7 @@ void Pdte_Offline_Test() {
         throw std::runtime_error("OA domain too small for PDTE layout");
     }
 
-    // Construct a small depth-3 decision tree.
+    // 各ノード情報の初期設定
     std::vector<TreeNodePlain> tree(kNodeCount);
     uint64_t leaf_label_counter = 1;
     for (uint64_t i = 0; i < kNodeCount; ++i) {
@@ -182,12 +201,14 @@ void Pdte_Offline_Test() {
                         " right=" + ToString(tree[i].right) + " label=" + ToString(tree[i].label));
     }
 
-    std::vector<uint64_t> features = {4, 1, 7, 9};
-    Logger::InfoLog(LOC, "[TreeGen] features=[" + ToString(features[0]) + ", " + ToString(features[1]) + 
-                    ", " + ToString(features[2]) + ", " + ToString(features[3]) + "]");
-    uint64_t              expected = EvaluateTreePlain(tree, features);
+    std::vector<uint64_t> features = BuildFeatureVector();
+    for (size_t i = 0; i < features.size(); ++i) {
+        Logger::InfoLog(LOC, "[TreeGen][Feature] idx=" + ToString(i) + " val=" + ToString(features[i]));
+    }
+    uint64_t expected = EvaluateTreePlain(tree, features);
     Logger::InfoLog(LOC, "[TreeGen] Expected result: " + ToString(expected));
 
+    // ノード情報を1つの配列に詰め込む
     std::vector<uint64_t> database(1ULL << d, 0);
     for (uint64_t i = 0; i < kNodeCount; ++i) {
         database[kThresholdOffset + i]  = tree[i].threshold;
@@ -201,12 +222,14 @@ void Pdte_Offline_Test() {
         }
     }
 
+    // 平文のノード情報をRSS化
     std::array<RepShareVec64, 3> database_sh = rss.ShareLocal(database);
     for (size_t p = 0; p < ringoa::sharing::kThreeParties; ++p) {
         sh_io.SaveShare(db_path + "_" + ToString(p), database_sh[p]);
     }
     file_io.WriteBinary(db_path, database);
 
+    // root(開始位置)のindexもRSS化
     uint64_t root_index = 0;
     std::array<RepShare64, 3> index_sh = rss.ShareLocal(root_index);
     file_io.WriteBinary(idx_path, root_index);
@@ -246,7 +269,7 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
     for (const auto &params : params_list) {
         params.PrintParameters();
         uint64_t d  = params.GetParameters().GetInputBitsize();
-        IntegerComparisonParameters ic_params(d, d);  // Match RingOA domain
+        IntegerComparisonParameters ic_params(d, d);  // 出力サイズをdにすると上手くいく
         uint64_t nu = params.GetParameters().GetTerminateBitsize();
         FileIo   file_io;
         ShareIo  sh_io;
@@ -266,49 +289,44 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
         file_io.ReadBinary(idx_path, index);
         file_io.ReadBinary(expected_path, expected_label);
         
-        // Reconstruct tree and features for verification
-        std::vector<TreeNodePlain> tree(kNodeCount);
-        std::vector<uint64_t> features(kFeatureCount);
-        for (uint64_t i = 0; i < kNodeCount; ++i) {
-            tree[i].threshold  = database[kThresholdOffset + i];
-            tree[i].left       = database[kLeftOffset + i];
-            tree[i].right      = database[kRightOffset + i];
-            tree[i].feature_id = i % kFeatureCount;
-            tree[i].label      = database[kLabelOffset + i];
-            if (i < kFeatureCount) {
-                features[i] = database[kFeatureValOffset + i];
-            }
-            if (i == 0 || i == 2 || i == 6 || i == 1022) {
-                Logger::InfoLog(LOC, "[DBRead] node[" + ToString(i) + "] fid=" + ToString(tree[i].feature_id) + " feature_val_from_db=" + ToString(database[kFeatureValOffset + i]));
-            }
-        }
-        Logger::InfoLog(LOC, "[OnlineVerify] features=[" + ToString(features[0]) + ", " + ToString(features[1]) + 
-                        ", " + ToString(features[2]) + ", " + ToString(features[3]) + "]");
-        uint64_t recalc_expected = EvaluateTreePlain(tree, features);
-        Logger::InfoLog(LOC, "[OnlineVerify] Recalculated expected: " + ToString(recalc_expected) + 
-                        ", stored expected: " + ToString(expected_label));
-        
-        // Log specific nodes for debugging
-        Logger::InfoLog(LOC, "[NodeDebug] node[28]: thr=" + ToString(tree[28].threshold) + 
-                        " fid=" + ToString(tree[28].feature_id) + " left=" + ToString(tree[28].left) + 
-                        " right=" + ToString(tree[28].right) + " label=" + ToString(tree[28].label));
-        Logger::InfoLog(LOC, "[NodeDebug] node[1022]: thr=" + ToString(tree[1022].threshold) + 
-                        " fid=" + ToString(tree[1022].feature_id) + " left=" + ToString(tree[1022].left) + 
-                        " right=" + ToString(tree[1022].right) + " label=" + ToString(tree[1022].label));
-        const uint64_t triple_budget =
-            std::max<uint64_t>(1ULL << 22, ic_params.GetInputBitsize() * static_cast<uint64_t>(kTreeDepth) * 4096ULL);
-        {
-            AdditiveSharing2P dcf_in_offline(ic_params.GetInputBitsize());
-            AdditiveSharing2P dcf_out_offline(ic_params.GetOutputBitsize());
-            dcf_in_offline.OfflineSetUp(triple_budget, dcf_trip_in);
-            dcf_out_offline.OfflineSetUp(triple_budget, dcf_trip_out);
-        }
-        {
-            AdditiveSharing2P ass_tmp(d);
-            RingOaKeyGenerator ringoa_tmp(params, ass_tmp);
-            const uint32_t offline_queries = static_cast<uint32_t>(kTreeDepth * 16);
-            ringoa_tmp.OfflineSetUp(offline_queries, kTestOSPath);
-        }
+        // // Reconstruct tree and features for verification
+        // std::vector<TreeNodePlain> tree(kNodeCount);
+        // std::vector<uint64_t>      features(kFeatureCount);
+        // for (uint64_t i = 0; i < kNodeCount; ++i) {
+        //     tree[i].threshold  = database[kThresholdOffset + i];
+        //     tree[i].left       = database[kLeftOffset + i];
+        //     tree[i].right      = database[kRightOffset + i];
+        //     tree[i].feature_id = i % kFeatureCount;
+        //     tree[i].label      = database[kLabelOffset + i];
+        //     if (i < kFeatureCount) {
+        //         features[i] = database[kFeatureValOffset + i];
+        //     }
+        //     if (i == 0 || i == 2 || i == 6 || i == 1022) {
+        //         Logger::InfoLog(LOC, "[DBRead] node[" + ToString(i) + "] fid=" + ToString(tree[i].feature_id) + " feature_val_from_db=" + ToString(database[kFeatureValOffset + i]));
+        //     }
+        // }
+        // for (size_t i = 0; i < features.size(); ++i) {
+        //     Logger::InfoLog(LOC, "[OnlineVerify][Feature] idx=" + ToString(i) + " val=" + ToString(features[i]));
+        // }
+        // uint64_t recalc_expected = EvaluateTreePlain(tree, features);
+        // Logger::InfoLog(LOC, "[OnlineVerify] Recalculated expected: " + ToString(recalc_expected) + 
+        //                 ", stored expected: " + ToString(expected_label));
+
+        // オフラインテストを必ず実行する想定で不要
+        // const uint64_t triple_budget =
+        //     std::max<uint64_t>(1ULL << 22, ic_params.GetInputBitsize() * static_cast<uint64_t>(kTreeDepth) * 4096ULL);
+        // {
+        //     AdditiveSharing2P dcf_in_offline(ic_params.GetInputBitsize());
+        //     AdditiveSharing2P dcf_out_offline(ic_params.GetOutputBitsize());
+        //     dcf_in_offline.OfflineSetUp(triple_budget, dcf_trip_in);
+        //     dcf_out_offline.OfflineSetUp(triple_budget, dcf_trip_out);
+        // }
+        // {
+        //     AdditiveSharing2P ass_tmp(d);
+        //     RingOaKeyGenerator ringoa_tmp(params, ass_tmp);
+        //     const uint32_t offline_queries = static_cast<uint32_t>(kTreeDepth * 16);
+        //     ringoa_tmp.OfflineSetUp(offline_queries, kTestOSPath);
+        // }
 
         // Define the task for each party
         auto MakeTask = [&](int party_id) {
@@ -418,7 +436,7 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                         chls.prev.recv(s2);                                   // from P2
                         bit_sh[0] = Mod2N(s0, d);
                         bit_sh[1] = Mod2N(s2, d);
-                        if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P0: local=" + ToString(local_share) + " s0=" + ToString(s0) + " masked=" + ToString(masked) + " s2=" + ToString(s2) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
+                        // if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P0: local=" + ToString(local_share) + " s0=" + ToString(s0) + " masked=" + ToString(masked) + " s2=" + ToString(s2) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
                     } else if (party_id == 1) {
                         uint64_t s0 = 0;
                         chls.prev.recv(s0);                                   // from P0
@@ -428,7 +446,7 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                         chls.next.send(masked);                               // to P2
                         bit_sh[0] = Mod2N(s1, d);
                         bit_sh[1] = Mod2N(s0, d);
-                        if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P1: local=" + ToString(local_share) + " s0=" + ToString(s0) + " s1=" + ToString(s1) + " masked=" + ToString(masked) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
+                        // if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P1: local=" + ToString(local_share) + " s0=" + ToString(s0) + " s1=" + ToString(s1) + " masked=" + ToString(masked) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
                     } else {
                         uint64_t s1 = 0;
                         chls.prev.recv(s1);                                   // from P1
@@ -440,7 +458,7 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                         chls.next.send(s2);                                   // to P0
                         bit_sh[0] = Mod2N(s2, d);
                         bit_sh[1] = Mod2N(s1, d);
-                        if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P2: s1=" + ToString(s1) + " masked_p0=" + ToString(masked_from_p0) + " masked_p1=" + ToString(masked_from_p1) + " s2=" + ToString(s2) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
+                        // if (debug_mode) Logger::InfoLog(LOC, "[ConvS2R] P2: s1=" + ToString(s1) + " masked_p0=" + ToString(masked_from_p0) + " masked_p1=" + ToString(masked_from_p1) + " s2=" + ToString(s2) + " bit_sh=(" + ToString(bit_sh[0]) + "," + ToString(bit_sh[1]) + ")");
                     }
                 };
 
@@ -478,56 +496,56 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                     uint64_t idx_plain   = 0;
                     uint64_t thr_plain   = 0;
                     uint64_t feat_plain  = 0;
-                    if (debug_mode) {
-                        rss.Open(chls, current_idx, idx_plain);
-                        rss.Open(chls, thr_sh, thr_plain);
-                        rss.Open(chls, feature_val, feat_plain);
-                    }
+                    // if (debug_mode) {
+                    //     rss.Open(chls, current_idx, idx_plain);
+                    //     rss.Open(chls, thr_sh, thr_plain);
+                    //     rss.Open(chls, feature_val, feat_plain);
+                    // }
                     ConvertReplicatedToAdditive(delta_sh, delta_part);
-                    if (debug_mode) {
-                        rss.Open(chls, delta_sh, delta_plain);
-                    }
-                    std::string delta_log = "[Pdte][depth " + ToString(depth) + "] idx=" + ShareStr(current_idx) +
-                                            " thr=" + ShareStr(thr_sh) + " feature=" + ShareStr(feature_val) +
-                                            " delta_part=" + ToString(delta_part);
-                    if (debug_mode)
-                        delta_log += " delta_plain=" + ToString(delta_plain) + " idx_plain=" + ToString(idx_plain) +
-                                     " thr_plain=" + ToString(thr_plain) + " feat_plain=" + ToString(feat_plain);
-                    Logger::InfoLog(LOC, delta_log);
+                    // if (debug_mode) {
+                    //     rss.Open(chls, delta_sh, delta_plain);
+                    // }
+                    // std::string delta_log = "[Pdte][depth " + ToString(depth) + "] idx=" + ShareStr(current_idx) +
+                    //                         " thr=" + ShareStr(thr_sh) + " feature=" + ShareStr(feature_val) +
+                    //                         " delta_part=" + ToString(delta_part);
+                    // if (debug_mode)
+                    //     delta_log += " delta_plain=" + ToString(delta_plain) + " idx_plain=" + ToString(idx_plain) +
+                    //                  " thr_plain=" + ToString(thr_plain) + " feat_plain=" + ToString(feat_plain);
+                    // Logger::InfoLog(LOC, delta_log);
 
                     if (party_id < 2) {
                         osuCrypto::Channel &dcf_chl = (party_id == 0) ? chls.next : chls.prev;
                         uint64_t              bit_share = dcf_eval->EvaluateSharedInput(dcf_chl, *dcf_key, delta_part, 0);
                         // Library returns 1 when delta >= 0, so invert to obtain (feature < threshold).
-                        if (debug_mode)
-                            Logger::InfoLog(LOC, "[DCF] P" + ToString(party_id) + ": delta_part=" + ToString(delta_part) +
-                                                    " bit_share=" + ToString(bit_share));
+                        // if (debug_mode)
+                        //     Logger::InfoLog(LOC, "[DCF] P" + ToString(party_id) + ": delta_part=" + ToString(delta_part) +
+                        //                             " bit_share=" + ToString(bit_share));
                         ConvertSsBitToReplicated(bit_share, cmp_bit);
                     } else {
-                        if (debug_mode)
-                            Logger::InfoLog(LOC, "[DCF] P2: not participating in DCF");
+                        // if (debug_mode)
+                        //     Logger::InfoLog(LOC, "[DCF] P2: not participating in DCF");
                         ConvertSsBitToReplicated(0, cmp_bit);
                     }
                     RepShare64 one_sh = MakePublicShare(1);
                     RepShare64 cmp_lt;
                     rss.EvaluateSub(one_sh, cmp_bit, cmp_lt);
                     cmp_bit = cmp_lt;
-                    if (debug_mode)
-                        Logger::InfoLog(LOC, "[DCF] inverted cmp_bit -> " + ShareStr(cmp_bit));
+                    // if (debug_mode)
+                    //     Logger::InfoLog(LOC, "[DCF] inverted cmp_bit -> " + ShareStr(cmp_bit));
 
                     RepShare64 next_idx;
                     rss.EvaluateSelect(chls, right_sh, left_sh, cmp_bit, next_idx);
                     uint64_t cmp_plain = 0;
                     uint64_t next_plain = 0;
-                    if (debug_mode) {
-                        rss.Open(chls, cmp_bit, cmp_plain);
-                        rss.Open(chls, next_idx, next_plain);
-                    }
-                    std::string cmp_log = "[Pdte][depth " + ToString(depth) + "] cmp_bit=" + ShareStr(cmp_bit) +
-                                          " left=" + ShareStr(left_sh) + " right=" + ShareStr(right_sh) + " next_idx=" + ShareStr(next_idx);
-                    if (debug_mode)
-                        cmp_log += " cmp_plain=" + ToString(cmp_plain) + " next_plain=" + ToString(next_plain);
-                    Logger::InfoLog(LOC, cmp_log);
+                    // if (debug_mode) {
+                    //     rss.Open(chls, cmp_bit, cmp_plain);
+                    //     rss.Open(chls, next_idx, next_plain);
+                    // }
+                    // std::string cmp_log = "[Pdte][depth " + ToString(depth) + "] cmp_bit=" + ShareStr(cmp_bit) +
+                    //                       " left=" + ShareStr(left_sh) + " right=" + ShareStr(right_sh) + " next_idx=" + ShareStr(next_idx);
+                    // if (debug_mode)
+                    //     cmp_log += " cmp_plain=" + ToString(cmp_plain) + " next_plain=" + ToString(next_plain);
+                    // Logger::InfoLog(LOC, cmp_log);
                     current_idx = next_idx;
                 }
 
@@ -535,21 +553,21 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                 AddConstIdx(current_idx, kLabelOffset, label_idx);
                 uint64_t final_idx_plain = 0;
                 uint64_t label_idx_plain = 0;
-                if (debug_mode) {
-                    rss.Open(chls, current_idx, final_idx_plain);
-                    rss.Open(chls, label_idx, label_idx_plain);
-                }
+                // if (debug_mode) {
+                //     rss.Open(chls, current_idx, final_idx_plain);
+                //     rss.Open(chls, label_idx, label_idx_plain);
+                // }
                 ObliviousRead(label_idx, label_share);
                 uint64_t final_plain = 0;
-                if (debug_mode) {
-                    rss.Open(chls, label_share, final_plain);
-                }
-                std::string final_log = "[Pdte] final current_idx=" + ShareStr(current_idx) + 
-                                       " label_idx=" + ShareStr(label_idx) + " label_share=" + ShareStr(label_share);
-                if (debug_mode)
-                    final_log += " final_idx_plain=" + ToString(final_idx_plain) + 
-                                " label_idx_plain=" + ToString(label_idx_plain) + " label_plain=" + ToString(final_plain);
-                Logger::InfoLog(LOC, final_log);
+                // if (debug_mode) {
+                //     rss.Open(chls, label_share, final_plain);
+                // }
+                // std::string final_log = "[Pdte] final current_idx=" + ShareStr(current_idx) + 
+                //                        " label_idx=" + ShareStr(label_idx) + " label_share=" + ShareStr(label_share);
+                // if (debug_mode)
+                //     final_log += " final_idx_plain=" + ToString(final_idx_plain) + 
+                //                 " label_idx_plain=" + ToString(label_idx_plain) + " label_plain=" + ToString(final_plain);
+                // Logger::InfoLog(LOC, final_log);
 
                 uint64_t local_res = 0;
                 rss.Open(chls, label_share, local_res);
