@@ -166,6 +166,7 @@ void Pdte_Offline_Test() {
 
     // Construct a small depth-3 decision tree.
     std::vector<TreeNodePlain> tree(kNodeCount);
+    uint64_t leaf_label_counter = 1;
     for (uint64_t i = 0; i < kNodeCount; ++i) {
         uint64_t left  = 2 * i + 1;
         uint64_t right = 2 * i + 2;
@@ -175,7 +176,7 @@ void Pdte_Offline_Test() {
         tree[i].feature_id = i % kFeatureCount;
         tree[i].left       = has_left ? left : i;
         tree[i].right      = has_right ? right : i;
-        tree[i].label      = has_left || has_right ? (500 + i) : (900 + i);
+        tree[i].label      = (has_left || has_right) ? 0 : leaf_label_counter++;
         Logger::InfoLog(LOC, "[TreeGen] node[" + ToString(i) + "] thr=" + ToString(tree[i].threshold) + 
                         " fid=" + ToString(tree[i].feature_id) + " left=" + ToString(tree[i].left) + 
                         " right=" + ToString(tree[i].right) + " label=" + ToString(tree[i].label));
