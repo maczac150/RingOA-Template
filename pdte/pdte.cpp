@@ -81,6 +81,7 @@ constexpr uint32_t kBenchTreeDepth    = 10;
 constexpr uint64_t kBenchNodeCount    = 1ULL << kBenchTreeDepth;
 constexpr uint64_t kBenchFeatureCount = 4;
 constexpr uint32_t kBenchRingBits     = 28;
+constexpr uint32_t kBenchDbBits       = kBenchTreeDepth + 3;
 
 // feature vectorの要素はフィボナッチ数列とする
 std::vector<uint64_t> BuildFeatureVector() {
@@ -654,7 +655,7 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
     uint64_t repeat = cmd.getOr("bench_repeat", kBenchRepeatDefault);
 
     ShareConfig      share_config = ShareConfig::Custom(kBenchRingBits);
-    RingOaParameters ringoa_params(RingOaConfig(kBenchRingBits), share_config);
+    RingOaParameters ringoa_params(RingOaConfig(kBenchDbBits), share_config);
     uint64_t         ring_bits = ringoa_params.GetParameters().GetInputBitsize();
     IntegerComparisonConfig ic_cfg;
     ic_cfg.input_domain_bits = ring_bits;
@@ -768,7 +769,7 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
     std::string network = cmd.isSet("network") ? cmd.get<std::string>("network") : "";
 
     ShareConfig      share_config = ShareConfig::Custom(kBenchRingBits);
-    RingOaParameters params(RingOaConfig(kBenchRingBits), share_config);
+    RingOaParameters params(RingOaConfig(kBenchDbBits), share_config);
     params.PrintParametersDebug();
     uint64_t d  = params.GetParameters().GetInputBitsize();
     IntegerComparisonConfig ic_cfg;
