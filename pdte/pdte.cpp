@@ -18,6 +18,7 @@
 #include <RingOA/protocol/shared_ot.h>
 #include <RingOA/sharing/additive_2p.h>
 #include <RingOA/sharing/additive_3p.h>
+#include <RingOA/sharing/share_config.h>
 #include <RingOA/sharing/share_io.h>
 #include <RingOA/utils/logger.h>
 #include <RingOA/utils/network.h>
@@ -41,11 +42,15 @@ using ringoa::Mod2N;
 using ringoa::ThreePartyNetworkManager;
 using ringoa::ToString, ringoa::Format;
 using ringoa::fss::EvalType;
+using ringoa::proto::IntegerComparisonConfig;
 using ringoa::proto::IntegerComparisonEvaluator;
 using ringoa::proto::IntegerComparisonKey;
 using ringoa::proto::IntegerComparisonKeyGenerator;
 using ringoa::proto::IntegerComparisonParameters;
 using ringoa::proto::KeyIo;
+using ringoa::proto::ProtocolContext2P;
+using ringoa::proto::ProtocolContext3P;
+using ringoa::proto::RingOaConfig;
 using ringoa::proto::RingOaEvaluator;
 using ringoa::proto::RingOaKey;
 using ringoa::proto::RingOaKeyGenerator;
@@ -57,14 +62,15 @@ using ringoa::proto::SharedOtParameters;
 using ringoa::sharing::AdditiveSharing2P;
 using ringoa::sharing::ReplicatedSharing3P;
 using ringoa::sharing::RepShare64, ringoa::sharing::RepShareVec64, ringoa::sharing::RepShareView64;
+using ringoa::sharing::ShareConfig;
 using ringoa::sharing::ShareIo;
 
 namespace {
 
-constexpr uint32_t kTreeDepth    = 10;
+constexpr uint32_t kTreeDepth    = 18;
 constexpr uint64_t kNodeCount    = 1ULL << kTreeDepth;
 constexpr uint64_t kFeatureCount = 4;
-constexpr uint32_t kRingBits     = 13;
+constexpr uint32_t kRingBits     = 21;
 
 // feature vectorの要素はフィボナッチ数列とする
 std::vector<uint64_t> BuildFeatureVector() {
@@ -105,20 +111,20 @@ struct TreeNodePlain {
 // 後続でMCPの結果と突き合わせ
 uint64_t EvaluateTreePlain(const std::vector<TreeNodePlain> &tree, const std::vector<uint64_t> &features) {
     uint64_t idx = 0;
-    Logger::InfoLog(LOC, "[PlainEval] Starting with idx=" + ToString(idx));
+    // Logger::InfoLog(LOC, "[PlainEval] Starting with idx=" + ToString(idx));
     for (uint32_t depth = 0; depth < kTreeDepth; ++depth) {
         const auto &node = tree[idx];
         uint64_t     fid = node.feature_id % features.size();
         uint64_t     fv  = features[fid];
         bool         cmp = (fv < node.threshold);
         uint64_t     next_idx = cmp ? node.left : node.right;
-        Logger::InfoLog(LOC, "[PlainEval][depth " + ToString(depth) + "] idx=" + ToString(idx) + 
-                        " fid=" + ToString(fid) + " fv=" + ToString(fv) + " thr=" + ToString(node.threshold) + 
-                        " cmp=" + ToString(cmp) + " left=" + ToString(node.left) + " right=" + ToString(node.right) + 
-                        " next_idx=" + ToString(next_idx) + " label=" + ToString(node.label));
+        // Logger::InfoLog(LOC, "[PlainEval][depth " + ToString(depth) + "] idx=" + ToString(idx) + 
+        //                 " fid=" + ToString(fid) + " fv=" + ToString(fv) + " thr=" + ToString(node.threshold) + 
+        //                 " cmp=" + ToString(cmp) + " left=" + ToString(node.left) + " right=" + ToString(node.right) + 
+        //                 " next_idx=" + ToString(next_idx) + " label=" + ToString(node.label));
         idx = next_idx;
         if (idx >= tree.size()) {
-            Logger::InfoLog(LOC, "[PlainEval] idx >= tree.size(), clamping to " + ToString(tree.size() - 1));
+            // Logger::InfoLog(LOC, "[PlainEval] idx >= tree.size(), clamping to " + ToString(tree.size() - 1));
             idx = tree.size() - 1;
         }
     }
@@ -148,16 +154,20 @@ void LoadIntegerComparisonKey(const std::string &path, IntegerComparisonKey &key
 void Pdte_Offline_Test() {
     Logger::DebugLog(LOC, "Pdte_Offline_Test...");
 
-    RingOaParameters ringoa_params(kRingBits);
+    ShareConfig      share_config = ShareConfig::Custom(kRingBits);
+    RingOaParameters ringoa_params(RingOaConfig(kRingBits), share_config);
     uint64_t         ring_bits = ringoa_params.GetParameters().GetInputBitsize();
-    IntegerComparisonParameters ic_params(ring_bits, ring_bits);  // Match RingOA domain
+    IntegerComparisonConfig ic_cfg;
+    ic_cfg.input_domain_bits = ring_bits;
+    IntegerComparisonParameters ic_params(ic_cfg, share_config);  // Match RingOA domain
     // SharedOtParameters          shared_params(10);
     uint64_t                    d = ringoa_params.GetParameters().GetInputBitsize();
 
-    AdditiveSharing2P             ass(d);
-    ReplicatedSharing3P           rss(d);
-    RingOaKeyGenerator            ringoa_gen(ringoa_params, ass);
-    IntegerComparisonKeyGenerator ic_gen(ic_params, ass, ass);
+    ProtocolContext3P             ringoa_ctx(share_config);
+    ProtocolContext2P             ic_ctx(share_config);
+    auto                         &rss = ringoa_ctx.Rss();
+    RingOaKeyGenerator            ringoa_gen(ringoa_params, ringoa_ctx);
+    IntegerComparisonKeyGenerator ic_gen(ic_params, ic_ctx);
     FileIo                        file_io;
     ShareIo                       sh_io;
     KeyIo                         key_io;
@@ -177,7 +187,6 @@ void Pdte_Offline_Test() {
     std::string expected_label = kTestOSPath + "pdte_expected_d" + ToString(d);
     std::string dcf_key_pref   = kTestOSPath + "pdte_dcf_key_";
     std::string dcf_trip_in    = kTestOSPath + "pdte_dcf";
-    std::string dcf_trip_out   = kTestOSPath + "pdte_dcf_out";
 
     if ((1ULL << d) < kLayoutEntries) {
         throw std::runtime_error("OA domain too small for PDTE layout");
@@ -196,17 +205,17 @@ void Pdte_Offline_Test() {
         tree[i].left       = has_left ? left : i;
         tree[i].right      = has_right ? right : i;
         tree[i].label      = (has_left || has_right) ? 0 : leaf_label_counter++;
-        Logger::InfoLog(LOC, "[TreeGen] node[" + ToString(i) + "] thr=" + ToString(tree[i].threshold) + 
-                        " fid=" + ToString(tree[i].feature_id) + " left=" + ToString(tree[i].left) + 
-                        " right=" + ToString(tree[i].right) + " label=" + ToString(tree[i].label));
+        // Logger::InfoLog(LOC, "[TreeGen] node[" + ToString(i) + "] thr=" + ToString(tree[i].threshold) + 
+        //                 " fid=" + ToString(tree[i].feature_id) + " left=" + ToString(tree[i].left) + 
+        //                 " right=" + ToString(tree[i].right) + " label=" + ToString(tree[i].label));
     }
 
     std::vector<uint64_t> features = BuildFeatureVector();
-    for (size_t i = 0; i < features.size(); ++i) {
-        Logger::InfoLog(LOC, "[TreeGen][Feature] idx=" + ToString(i) + " val=" + ToString(features[i]));
-    }
+    // for (size_t i = 0; i < features.size(); ++i) {
+    //     Logger::InfoLog(LOC, "[TreeGen][Feature] idx=" + ToString(i) + " val=" + ToString(features[i]));
+    // }
     uint64_t expected = EvaluateTreePlain(tree, features);
-    Logger::InfoLog(LOC, "[TreeGen] Expected result: " + ToString(expected));
+    // Logger::InfoLog(LOC, "[TreeGen] Expected result: " + ToString(expected));
 
     // ノード情報を1つの配列に詰め込む
     std::vector<uint64_t> database(1ULL << d, 0);
@@ -217,9 +226,9 @@ void Pdte_Offline_Test() {
         uint64_t fid = tree[i].feature_id % features.size();
         database[kFeatureValOffset + i] = features[fid];
         database[kLabelOffset + i]      = tree[i].label;
-        if (i == 0 || i == 2 || i == 6 || i == 1022) {
-            Logger::InfoLog(LOC, "[DBGen] node[" + ToString(i) + "] fid=" + ToString(fid) + " feature_val=" + ToString(features[fid]) + " stored_at=" + ToString(kFeatureValOffset + i));
-        }
+        // if (i == 0 || i == 2 || i == 6 || i == 1022) {
+        //     Logger::InfoLog(LOC, "[DBGen] node[" + ToString(i) + "] fid=" + ToString(fid) + " feature_val=" + ToString(features[fid]) + " stored_at=" + ToString(kFeatureValOffset + i));
+        // }
     }
 
     // 平文のノード情報をRSS化
@@ -243,12 +252,10 @@ void Pdte_Offline_Test() {
     SaveIntegerComparisonKey(dcf_key_pref + "1", ic_keys.second);
 
     // DCF用のbeaver triples生成
-    AdditiveSharing2P dcf_in(ic_params.GetInputBitsize());
-    AdditiveSharing2P dcf_out(ic_params.GetOutputBitsize());
+    auto &dcf_share = ic_ctx.Arith();
     const uint64_t triple_budget =
-        std::max<uint64_t>(1ULL << 22, ic_params.GetInputBitsize() * static_cast<uint64_t>(kTreeDepth) * 4096ULL);
-    dcf_in.OfflineSetUp(triple_budget, dcf_trip_in);
-    dcf_out.OfflineSetUp(triple_budget, dcf_trip_out);
+        std::max<uint64_t>(1ULL << 22, ic_params.GetInputDomainBits() * static_cast<uint64_t>(kTreeDepth) * 4096ULL);
+    dcf_share.OfflineSetUp(triple_budget, dcf_trip_in);
 
     const uint32_t offline_queries = static_cast<uint32_t>(kTreeDepth * 16);
     // RingOA・RSS用のbeaver triples等生成
@@ -262,14 +269,17 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
     Logger::InfoLog(LOC, "Pdte_Additive_Online_Test...");
     const bool debug_mode = cmd.isSet("debug") || cmd.isSet("-debug");
     std::vector<RingOaParameters> params_list = {
-        RingOaParameters(kRingBits),
+        RingOaParameters(RingOaConfig(kRingBits), ShareConfig::Custom(kRingBits)),
         // RingOaParameters(15),
         // RingOaParameters(20),
     };
     for (const auto &params : params_list) {
-        params.PrintParameters();
+        params.PrintParametersDebug();
         uint64_t d  = params.GetParameters().GetInputBitsize();
-        IntegerComparisonParameters ic_params(d, d);  // 出力サイズをdにすると上手くいく
+        ShareConfig share_config = ShareConfig::Custom(params.GetShareSize());
+        IntegerComparisonConfig ic_cfg;
+        ic_cfg.input_domain_bits = d;
+        IntegerComparisonParameters ic_params(ic_cfg, share_config);  // 出力サイズをdにすると上手くいく
         uint64_t nu = params.GetParameters().GetTerminateBitsize();
         FileIo   file_io;
         ShareIo  sh_io;
@@ -281,7 +291,6 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
         std::string           expected_path = kTestOSPath + "pdte_expected_d" + ToString(d);
         std::string           dcf_key_pref  = kTestOSPath + "pdte_dcf_key_";
         std::string           dcf_trip_in   = kTestOSPath + "pdte_dcf";
-        std::string           dcf_trip_out  = kTestOSPath + "pdte_dcf_out";
         std::vector<uint64_t> database;
         uint64_t              index{0};
         uint64_t              expected_label{0};
@@ -332,10 +341,10 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
         auto MakeTask = [&](int party_id) {
             return [=, &result](osuCrypto::Channel &chl_next, osuCrypto::Channel &chl_prev) {
                 ringoa::GlobalRng::Initialize();
-                ReplicatedSharing3P rss(d);
-                AdditiveSharing2P   ass_prev(d);
-                AdditiveSharing2P   ass_next(d);
-                RingOaEvaluator     eval(params, rss, ass_prev, ass_next);
+                ProtocolContext3P ringoa_ctx(share_config);
+                ProtocolContext2P ic_ctx(share_config);
+                auto             &rss = ringoa_ctx.Rss();
+                RingOaEvaluator   eval(params, ringoa_ctx);
                 Channels            chls(party_id, chl_prev, chl_next);
 
                 // Load keys
@@ -356,18 +365,13 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                 eval.OnlineSetUp(party_id, kTestOSPath);
                 rss.OnlineSetUp(party_id, kTestOSPath + "prf");
 
-                std::unique_ptr<AdditiveSharing2P>           dcf_in;
-                std::unique_ptr<AdditiveSharing2P>           dcf_out;
                 std::unique_ptr<IntegerComparisonEvaluator> dcf_eval;
                 std::unique_ptr<IntegerComparisonKey>       dcf_key;
                 if (party_id < 2) {
-                    dcf_in  = std::make_unique<AdditiveSharing2P>(ic_params.GetInputBitsize());
-                    dcf_out = std::make_unique<AdditiveSharing2P>(ic_params.GetOutputBitsize());
                     dcf_key = std::make_unique<IntegerComparisonKey>(party_id, ic_params);
                     LoadIntegerComparisonKey(dcf_key_pref + ToString(party_id), *dcf_key);
-                    dcf_in->OnlineSetUp(party_id, dcf_trip_in);
-                    dcf_out->OnlineSetUp(party_id, dcf_trip_out);
-                    dcf_eval = std::make_unique<IntegerComparisonEvaluator>(ic_params, *dcf_in, *dcf_out);
+                    ic_ctx.Arith().OnlineSetUp(party_id, dcf_trip_in);
+                    dcf_eval = std::make_unique<IntegerComparisonEvaluator>(ic_params, ic_ctx);
                 }
 
                 // 公開値を、replicated share として表現するための関数
@@ -396,8 +400,8 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                     eval.Evaluate(chls, key, uv_prev, uv_next, db_view, idx, out);
                 };
 
-                const uint64_t dcf_in_bits  = ic_params.GetInputBitsize();
-                const uint64_t dcf_out_bits = ic_params.GetOutputBitsize();
+                const uint64_t dcf_in_bits  = ic_params.GetInputDomainBits();
+                const uint64_t dcf_out_bits = ic_params.GetDdcfOutputBitsize();
                 auto MaskValue = [](uint64_t value, uint64_t bits) -> uint64_t {
                     if (bits >= 64)
                         return value;
