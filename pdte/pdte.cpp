@@ -118,21 +118,18 @@ std::vector<uint64_t> BuildBenchFeatureVector() {
     return features;
 }
 
-// ノード情報を1つの配列に詰め込むため
-// 鍵が1つで済む
-constexpr uint64_t kThresholdOffset  = 0;
-constexpr uint64_t kLeftOffset       = kThresholdOffset + kNodeCount;
-constexpr uint64_t kRightOffset      = kLeftOffset + kNodeCount;
-constexpr uint64_t kFeatureValOffset = kRightOffset + kNodeCount;
-constexpr uint64_t kLabelOffset      = kFeatureValOffset + kNodeCount;
-constexpr uint64_t kLayoutEntries    = kLabelOffset + kNodeCount;
-
-constexpr uint64_t kBenchThresholdOffset  = 0;
-constexpr uint64_t kBenchLeftOffset       = kBenchThresholdOffset + kBenchNodeCount;
-constexpr uint64_t kBenchRightOffset      = kBenchLeftOffset + kBenchNodeCount;
-constexpr uint64_t kBenchFeatureValOffset = kBenchRightOffset + kBenchNodeCount;
-constexpr uint64_t kBenchLabelOffset      = kBenchFeatureValOffset + kBenchNodeCount;
-constexpr uint64_t kBenchLayoutEntries    = kBenchLabelOffset + kBenchNodeCount;
+std::vector<uint64_t> PadToDomain(const std::vector<uint64_t> &src, uint64_t bits) {
+    const uint64_t target = 1ULL << bits;
+    if (src.size() > target) {
+        throw std::runtime_error("database size exceeds 2^d");
+    }
+    if (src.size() == target) {
+        return src;
+    }
+    std::vector<uint64_t> out(target, 0);
+    std::copy(src.begin(), src.end(), out.begin());
+    return out;
+}
 
 // 平文の決定木構造
 struct TreeNodePlain {
@@ -249,13 +246,17 @@ void Pdte_Offline_Test() {
     key_io.SaveKey(key_path + "_1", ringoa_keys[1]);
     key_io.SaveKey(key_path + "_2", ringoa_keys[2]);
 
-    std::string db_path        = kTestOSPath + "ringoadb_d" + ToString(d);
+    std::string db_thr_path    = kTestOSPath + "ringoa_thr_d" + ToString(d);
+    std::string db_left_path   = kTestOSPath + "ringoa_left_d" + ToString(d);
+    std::string db_right_path  = kTestOSPath + "ringoa_right_d" + ToString(d);
+    std::string db_feat_path   = kTestOSPath + "ringoa_feat_d" + ToString(d);
+    std::string db_label_path  = kTestOSPath + "ringoa_label_d" + ToString(d);
     std::string idx_path       = kTestOSPath + "ringoaidx_d" + ToString(d);
     std::string expected_label = kTestOSPath + "pdte_expected_d" + ToString(d);
     std::string dcf_key_pref   = kTestOSPath + "pdte_dcf_key_";
     std::string dcf_trip_in    = kTestOSPath + "pdte_dcf";
 
-    if ((1ULL << d) < kLayoutEntries) {
+    if ((1ULL << d) < kNodeCount) {
         throw std::runtime_error("OA domain too small for PDTE layout");
     }
 
@@ -284,26 +285,46 @@ void Pdte_Offline_Test() {
     uint64_t expected = EvaluateTreePlain(tree, features);
     // Logger::InfoLog(LOC, "[TreeGen] Expected result: " + ToString(expected));
 
-    // ノード情報を1つの配列に詰め込む
-    std::vector<uint64_t> database(1ULL << d, 0);
+    std::vector<uint64_t> thresholds(kNodeCount, 0);
+    std::vector<uint64_t> lefts(kNodeCount, 0);
+    std::vector<uint64_t> rights(kNodeCount, 0);
+    std::vector<uint64_t> feature_vals(kNodeCount, 0);
+    std::vector<uint64_t> labels(kNodeCount, 0);
     for (uint64_t i = 0; i < kNodeCount; ++i) {
-        database[kThresholdOffset + i]  = tree[i].threshold;
-        database[kLeftOffset + i]       = tree[i].left;
-        database[kRightOffset + i]      = tree[i].right;
+        thresholds[i] = tree[i].threshold;
+        lefts[i]      = tree[i].left;
+        rights[i]     = tree[i].right;
         uint64_t fid = tree[i].feature_id % features.size();
-        database[kFeatureValOffset + i] = features[fid];
-        database[kLabelOffset + i]      = tree[i].label;
+        feature_vals[i] = features[fid];
+        labels[i]       = tree[i].label;
         // if (i == 0 || i == 2 || i == 6 || i == 1022) {
         //     Logger::InfoLog(LOC, "[DBGen] node[" + ToString(i) + "] fid=" + ToString(fid) + " feature_val=" + ToString(features[fid]) + " stored_at=" + ToString(kFeatureValOffset + i));
         // }
     }
 
-    // 平文のノード情報をRSS化
-    std::array<RepShareVec64, 3> database_sh = rss.ShareLocal(database);
+    std::vector<uint64_t> thr_db   = PadToDomain(thresholds, d);
+    std::vector<uint64_t> left_db  = PadToDomain(lefts, d);
+    std::vector<uint64_t> right_db = PadToDomain(rights, d);
+    std::vector<uint64_t> feat_db  = PadToDomain(feature_vals, d);
+    std::vector<uint64_t> label_db = PadToDomain(labels, d);
+
+    std::array<RepShareVec64, 3> thr_sh   = rss.ShareLocal(thr_db);
+    std::array<RepShareVec64, 3> left_sh  = rss.ShareLocal(left_db);
+    std::array<RepShareVec64, 3> right_sh = rss.ShareLocal(right_db);
+    std::array<RepShareVec64, 3> feat_sh  = rss.ShareLocal(feat_db);
+    std::array<RepShareVec64, 3> label_sh = rss.ShareLocal(label_db);
     for (size_t p = 0; p < ringoa::sharing::kThreeParties; ++p) {
-        sh_io.SaveShare(db_path + "_" + ToString(p), database_sh[p]);
+        sh_io.SaveShare(db_thr_path + "_" + ToString(p), thr_sh[p]);
+        sh_io.SaveShare(db_left_path + "_" + ToString(p), left_sh[p]);
+        sh_io.SaveShare(db_right_path + "_" + ToString(p), right_sh[p]);
+        sh_io.SaveShare(db_feat_path + "_" + ToString(p), feat_sh[p]);
+        sh_io.SaveShare(db_label_path + "_" + ToString(p), label_sh[p]);
     }
-    file_io.WriteBinary(db_path, database);
+    file_io.WriteBinary(db_thr_path, thr_db);
+    file_io.WriteBinary(db_left_path, left_db);
+    file_io.WriteBinary(db_right_path, right_db);
+    file_io.WriteBinary(db_feat_path, feat_db);
+    file_io.WriteBinary(db_label_path, label_db);
 
     // root(開始位置)のindexもRSS化
     uint64_t root_index = 0;
@@ -353,17 +374,34 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
 
         uint64_t              result{0};
         std::string           key_path      = kTestOSPath + "ringoakey_d" + ToString(d);
-        std::string           db_path       = kTestOSPath + "ringoadb_d" + ToString(d);
+        std::string           db_thr_path   = kTestOSPath + "ringoa_thr_d" + ToString(d);
+        std::string           db_left_path  = kTestOSPath + "ringoa_left_d" + ToString(d);
+        std::string           db_right_path = kTestOSPath + "ringoa_right_d" + ToString(d);
+        std::string           db_feat_path  = kTestOSPath + "ringoa_feat_d" + ToString(d);
+        std::string           db_label_path = kTestOSPath + "ringoa_label_d" + ToString(d);
         std::string           idx_path      = kTestOSPath + "ringoaidx_d" + ToString(d);
         std::string           expected_path = kTestOSPath + "pdte_expected_d" + ToString(d);
         std::string           dcf_key_pref  = kTestOSPath + "pdte_dcf_key_";
         std::string           dcf_trip_in   = kTestOSPath + "pdte_dcf";
-        std::vector<uint64_t> database;
+        std::vector<uint64_t> thr_db;
+        std::vector<uint64_t> left_db;
+        std::vector<uint64_t> right_db;
+        std::vector<uint64_t> feat_db;
+        std::vector<uint64_t> label_db;
         uint64_t              index{0};
         uint64_t              expected_label{0};
-        file_io.ReadBinary(db_path, database);
+        file_io.ReadBinary(db_thr_path, thr_db);
+        file_io.ReadBinary(db_left_path, left_db);
+        file_io.ReadBinary(db_right_path, right_db);
+        file_io.ReadBinary(db_feat_path, feat_db);
+        file_io.ReadBinary(db_label_path, label_db);
         file_io.ReadBinary(idx_path, index);
         file_io.ReadBinary(expected_path, expected_label);
+        const uint64_t expected_size = 1ULL << d;
+        if (thr_db.size() != expected_size || left_db.size() != expected_size || right_db.size() != expected_size ||
+            feat_db.size() != expected_size || label_db.size() != expected_size) {
+            throw std::runtime_error("bench database size does not match input bitsize");
+        }
         
         // // Reconstruct tree and features for verification
         // std::vector<TreeNodePlain> tree(kNodeCount);
@@ -419,12 +457,23 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                 KeyIo     key_io;
                 key_io.LoadKey(key_path + "_" + ToString(party_id), key);
 
-                // Load data
-                RepShareVec64 database_sh;
+                RepShareVec64 thr_sh;
+                RepShareVec64 left_sh;
+                RepShareVec64 right_sh;
+                RepShareVec64 feat_sh;
+                RepShareVec64 label_sh;
                 RepShare64    index_sh;
-                sh_io.LoadShare(db_path + "_" + ToString(party_id), database_sh);
+                sh_io.LoadShare(db_thr_path + "_" + ToString(party_id), thr_sh);
+                sh_io.LoadShare(db_left_path + "_" + ToString(party_id), left_sh);
+                sh_io.LoadShare(db_right_path + "_" + ToString(party_id), right_sh);
+                sh_io.LoadShare(db_feat_path + "_" + ToString(party_id), feat_sh);
+                sh_io.LoadShare(db_label_path + "_" + ToString(party_id), label_sh);
                 sh_io.LoadShare(idx_path + "_" + ToString(party_id), index_sh);
-                RepShareView64 db_view(database_sh);
+                RepShareView64 thr_view(thr_sh);
+                RepShareView64 left_view(left_sh);
+                RepShareView64 right_view(right_sh);
+                RepShareView64 feat_view(feat_sh);
+                RepShareView64 label_view(label_sh);
 
                 std::vector<ringoa::block> uv_prev(1U << nu), uv_next(1U << nu);
 
@@ -458,13 +507,8 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                     return sh;
                 };
 
-                auto AddConstIdx = [&](const RepShare64 &idx, uint64_t offset, RepShare64 &out) {
-                    RepShare64 off = MakePublicShare(offset);
-                    rss.EvaluateAdd(idx, off, out);
-                };
-
-                auto ObliviousRead = [&](const RepShare64 &idx, RepShare64 &out) {
-                    eval.Evaluate(chls, key, uv_prev, uv_next, db_view, idx, out);
+                auto ObliviousRead = [&](const RepShareView64 &view, const RepShare64 &idx, RepShare64 &out) {
+                    eval.Evaluate(chls, key, uv_prev, uv_next, view, idx, out);
                 };
 
                 const uint64_t dcf_in_bits  = ic_params.GetInputDomainBits();
@@ -544,19 +588,18 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                     RepShare64 thr_idx, left_idx, right_idx, fid_idx;
                     RepShare64 thr_sh, left_sh, right_sh, fid_sh;
 
-                    AddConstIdx(current_idx, kThresholdOffset, thr_idx);
-                    ObliviousRead(thr_idx, thr_sh);
+                    thr_idx = current_idx;
+                    ObliviousRead(thr_view, thr_idx, thr_sh);
 
-                    AddConstIdx(current_idx, kLeftOffset, left_idx);
-                    ObliviousRead(left_idx, left_sh);
+                    left_idx = current_idx;
+                    ObliviousRead(left_view, left_idx, left_sh);
 
-                    AddConstIdx(current_idx, kRightOffset, right_idx);
-                    ObliviousRead(right_idx, right_sh);
+                    right_idx = current_idx;
+                    ObliviousRead(right_view, right_idx, right_sh);
 
-                    RepShare64 feature_val_idx;
-                    AddConstIdx(current_idx, kFeatureValOffset, feature_val_idx);
+                    RepShare64 feature_val_idx = current_idx;
                     RepShare64 feature_val;
-                    ObliviousRead(feature_val_idx, feature_val);
+                    ObliviousRead(feat_view, feature_val_idx, feature_val);
 
                     RepShare64 delta_sh;
                     rss.EvaluateSub(feature_val, thr_sh, delta_sh);
@@ -621,14 +664,14 @@ void Pdte_Online_Test(const osuCrypto::CLP &cmd) {
                 }
 
                 RepShare64 label_idx;
-                AddConstIdx(current_idx, kLabelOffset, label_idx);
+                label_idx = current_idx;
                 uint64_t final_idx_plain = 0;
                 uint64_t label_idx_plain = 0;
                 // if (debug_mode) {
                 //     rss.Open(chls, current_idx, final_idx_plain);
                 //     rss.Open(chls, label_idx, label_idx_plain);
                 // }
-                ObliviousRead(label_idx, label_share);
+                ObliviousRead(label_view, label_idx, label_share);
                 uint64_t final_plain = 0;
                 // if (debug_mode) {
                 //     rss.Open(chls, label_share, final_plain);
@@ -673,10 +716,12 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
     uint32_t bench_tree_depth = cmd.getOr("bench_depth", static_cast<int>(kBenchTreeDepth));
     uint32_t bench_dbits = cmd.getOr("bench_dbits", static_cast<int>(kBenchDbBits));
     uint32_t bench_ringbits = cmd.getOr("bench_ringbits", static_cast<int>(kBenchRingBits));
-    bool     use_external_db = cmd.hasValue("bench_db");
+    bool use_external_db = cmd.hasValue("bench_db_threshold") || cmd.hasValue("bench_db_left") ||
+                           cmd.hasValue("bench_db_right") || cmd.hasValue("bench_db_feature") ||
+                           cmd.hasValue("bench_db_label");
 
     if (use_external_db && !cmd.hasValue("bench_depth")) {
-        throw std::runtime_error("bench_db requires --bench_depth to match the packed tree depth");
+        throw std::runtime_error("bench_db_* requires --bench_depth to match the tree depth");
     }
 
     ShareConfig      share_config = ShareConfig::Custom(bench_ringbits);
@@ -697,21 +742,17 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
     KeyIo                         key_io;
 
     std::string key_path = kBenchRingOAPath + "ringoakey_d" + ToString(d);
-    std::string db_path        = kBenchRingOAPath + "ringoadb_d" + ToString(d);
+    std::string db_thr_path    = kBenchRingOAPath + "ringoa_thr_d" + ToString(d);
+    std::string db_left_path   = kBenchRingOAPath + "ringoa_left_d" + ToString(d);
+    std::string db_right_path  = kBenchRingOAPath + "ringoa_right_d" + ToString(d);
+    std::string db_feat_path   = kBenchRingOAPath + "ringoa_feat_d" + ToString(d);
+    std::string db_label_path  = kBenchRingOAPath + "ringoa_label_d" + ToString(d);
     std::string idx_path       = kBenchRingOAPath + "ringoaidx_d" + ToString(d);
     std::string expected_label = kBenchRingOAPath + "pdte_expected_d" + ToString(d);
     std::string dcf_key_pref   = kBenchRingOAPath + "pdte_dcf_key_";
     std::string dcf_trip_in    = kBenchRingOAPath + "pdte_dcf";
-
     uint64_t bench_node_count = 1ULL << bench_tree_depth;
-    uint64_t bench_threshold_offset  = 0;
-    uint64_t bench_left_offset       = bench_threshold_offset + bench_node_count;
-    uint64_t bench_right_offset      = bench_left_offset + bench_node_count;
-    uint64_t bench_feature_val_offset = bench_right_offset + bench_node_count;
-    uint64_t bench_label_offset      = bench_feature_val_offset + bench_node_count;
-    uint64_t bench_layout_entries    = bench_label_offset + bench_node_count;
-
-    if ((1ULL << d) < bench_layout_entries) {
+    if ((1ULL << d) < bench_node_count) {
         throw std::runtime_error("OA domain too small for PDTE layout");
     }
 
@@ -733,18 +774,38 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
 
     timer_mgr.SelectTimer(timer_datagen);
     timer_mgr.Start();
-    std::vector<uint64_t> database;
+    std::vector<uint64_t> thresholds;
+    std::vector<uint64_t> lefts;
+    std::vector<uint64_t> rights;
+    std::vector<uint64_t> feature_vals;
+    std::vector<uint64_t> labels;
     uint64_t expected = 0;
     if (use_external_db) {
         if (!cmd.hasValue("bench_expected")) {
-            throw std::runtime_error("bench_db requires --bench_expected for expected label");
+            throw std::runtime_error("bench_db_* requires --bench_expected for expected label");
         }
-        std::string ext_db_path = cmd.get<std::string>("bench_db");
+        if (!cmd.hasValue("bench_db_threshold") || !cmd.hasValue("bench_db_left") ||
+            !cmd.hasValue("bench_db_right") || !cmd.hasValue("bench_db_feature") ||
+            !cmd.hasValue("bench_db_label")) {
+            throw std::runtime_error("bench_db_* requires threshold/left/right/feature/label paths");
+        }
+        std::string ext_thr_path = cmd.get<std::string>("bench_db_threshold");
+        std::string ext_left_path = cmd.get<std::string>("bench_db_left");
+        std::string ext_right_path = cmd.get<std::string>("bench_db_right");
+        std::string ext_feat_path = cmd.get<std::string>("bench_db_feature");
+        std::string ext_label_path = cmd.get<std::string>("bench_db_label");
         std::string ext_expected_path = cmd.get<std::string>("bench_expected");
-        file_io.ReadBinary(ext_db_path, database);
+        file_io.ReadBinary(ext_thr_path, thresholds);
+        file_io.ReadBinary(ext_left_path, lefts);
+        file_io.ReadBinary(ext_right_path, rights);
+        file_io.ReadBinary(ext_feat_path, feature_vals);
+        file_io.ReadBinary(ext_label_path, labels);
         file_io.ReadBinary(ext_expected_path, expected);
-        if (database.size() != (1ULL << d)) {
-            throw std::runtime_error("bench_db size does not match --bench_dbits (2^d)");
+        const uint64_t expected_size = 1ULL << d;
+        if (thresholds.size() != expected_size || lefts.size() != expected_size ||
+            rights.size() != expected_size || feature_vals.size() != expected_size ||
+            labels.size() != expected_size) {
+            throw std::runtime_error("bench_db_* size does not match --bench_dbits (2^d)");
         }
     } else {
         std::vector<TreeNodePlain> tree(bench_node_count);
@@ -764,22 +825,44 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
         std::vector<uint64_t> features = BuildBenchFeatureVector();
         expected = EvaluateTreePlainDepth(tree, features, bench_tree_depth);
 
-        database.assign(1ULL << d, 0);
+        thresholds.assign(bench_node_count, 0);
+        lefts.assign(bench_node_count, 0);
+        rights.assign(bench_node_count, 0);
+        feature_vals.assign(bench_node_count, 0);
+        labels.assign(bench_node_count, 0);
         for (uint64_t i = 0; i < bench_node_count; ++i) {
-            database[bench_threshold_offset + i]  = tree[i].threshold;
-            database[bench_left_offset + i]       = tree[i].left;
-            database[bench_right_offset + i]      = tree[i].right;
+            thresholds[i] = tree[i].threshold;
+            lefts[i]      = tree[i].left;
+            rights[i]     = tree[i].right;
             uint64_t fid = tree[i].feature_id % features.size();
-            database[bench_feature_val_offset + i] = features[fid];
-            database[bench_label_offset + i]      = tree[i].label;
+            feature_vals[i] = features[fid];
+            labels[i]       = tree[i].label;
         }
     }
 
-    std::array<RepShareVec64, 3> database_sh = rss.ShareLocal(database);
+    std::vector<uint64_t> thr_db   = PadToDomain(thresholds, d);
+    std::vector<uint64_t> left_db  = PadToDomain(lefts, d);
+    std::vector<uint64_t> right_db = PadToDomain(rights, d);
+    std::vector<uint64_t> feat_db  = PadToDomain(feature_vals, d);
+    std::vector<uint64_t> label_db = PadToDomain(labels, d);
+
+    std::array<RepShareVec64, 3> thr_sh   = rss.ShareLocal(thr_db);
+    std::array<RepShareVec64, 3> left_sh  = rss.ShareLocal(left_db);
+    std::array<RepShareVec64, 3> right_sh = rss.ShareLocal(right_db);
+    std::array<RepShareVec64, 3> feat_sh  = rss.ShareLocal(feat_db);
+    std::array<RepShareVec64, 3> label_sh = rss.ShareLocal(label_db);
     for (size_t p = 0; p < ringoa::sharing::kThreeParties; ++p) {
-        sh_io.SaveShare(db_path + "_" + ToString(p), database_sh[p]);
+        sh_io.SaveShare(db_thr_path + "_" + ToString(p), thr_sh[p]);
+        sh_io.SaveShare(db_left_path + "_" + ToString(p), left_sh[p]);
+        sh_io.SaveShare(db_right_path + "_" + ToString(p), right_sh[p]);
+        sh_io.SaveShare(db_feat_path + "_" + ToString(p), feat_sh[p]);
+        sh_io.SaveShare(db_label_path + "_" + ToString(p), label_sh[p]);
     }
-    file_io.WriteBinary(db_path, database);
+    file_io.WriteBinary(db_thr_path, thr_db);
+    file_io.WriteBinary(db_left_path, left_db);
+    file_io.WriteBinary(db_right_path, right_db);
+    file_io.WriteBinary(db_feat_path, feat_db);
+    file_io.WriteBinary(db_label_path, label_db);
 
     uint64_t root_index = 0;
     std::array<RepShare64, 3> index_sh = rss.ShareLocal(root_index);
@@ -832,27 +915,34 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
 
     uint64_t              result{0};
     std::string           key_path      = kBenchRingOAPath + "ringoakey_d" + ToString(d);
-    std::string           db_path       = kBenchRingOAPath + "ringoadb_d" + ToString(d);
+    std::string           db_thr_path   = kBenchRingOAPath + "ringoa_thr_d" + ToString(d);
+    std::string           db_left_path  = kBenchRingOAPath + "ringoa_left_d" + ToString(d);
+    std::string           db_right_path = kBenchRingOAPath + "ringoa_right_d" + ToString(d);
+    std::string           db_feat_path  = kBenchRingOAPath + "ringoa_feat_d" + ToString(d);
+    std::string           db_label_path = kBenchRingOAPath + "ringoa_label_d" + ToString(d);
     std::string           idx_path      = kBenchRingOAPath + "ringoaidx_d" + ToString(d);
     std::string           expected_path = kBenchRingOAPath + "pdte_expected_d" + ToString(d);
     std::string           dcf_key_pref  = kBenchRingOAPath + "pdte_dcf_key_";
     std::string           dcf_trip_in   = kBenchRingOAPath + "pdte_dcf";
-    std::vector<uint64_t> database;
+    std::vector<uint64_t> thr_db;
+    std::vector<uint64_t> left_db;
+    std::vector<uint64_t> right_db;
+    std::vector<uint64_t> feat_db;
+    std::vector<uint64_t> label_db;
     uint64_t              index{0};
     uint64_t              expected_label{0};
-    file_io.ReadBinary(db_path, database);
+    file_io.ReadBinary(db_thr_path, thr_db);
+    file_io.ReadBinary(db_left_path, left_db);
+    file_io.ReadBinary(db_right_path, right_db);
+    file_io.ReadBinary(db_feat_path, feat_db);
+    file_io.ReadBinary(db_label_path, label_db);
     file_io.ReadBinary(idx_path, index);
     file_io.ReadBinary(expected_path, expected_label);
-    if (database.size() != (1ULL << d)) {
+    const uint64_t expected_size = 1ULL << d;
+    if (thr_db.size() != expected_size || left_db.size() != expected_size || right_db.size() != expected_size ||
+        feat_db.size() != expected_size || label_db.size() != expected_size) {
         throw std::runtime_error("bench database size does not match input bitsize");
     }
-
-    uint64_t bench_node_count = 1ULL << bench_tree_depth;
-    uint64_t bench_threshold_offset  = 0;
-    uint64_t bench_left_offset       = bench_threshold_offset + bench_node_count;
-    uint64_t bench_right_offset      = bench_left_offset + bench_node_count;
-    uint64_t bench_feature_val_offset = bench_right_offset + bench_node_count;
-    uint64_t bench_label_offset      = bench_feature_val_offset + bench_node_count;
 
     auto MakeTask = [&](int party_id) {
         return [=, &result](osuCrypto::Channel &chl_next, osuCrypto::Channel &chl_prev) {
@@ -874,11 +964,23 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
             KeyIo     key_io;
             key_io.LoadKey(key_path + "_" + ToString(party_id), key);
 
-            RepShareVec64 database_sh;
+            RepShareVec64 thr_sh;
+            RepShareVec64 left_sh;
+            RepShareVec64 right_sh;
+            RepShareVec64 feat_sh;
+            RepShareVec64 label_sh;
             RepShare64    index_sh;
-            sh_io.LoadShare(db_path + "_" + ToString(party_id), database_sh);
+            sh_io.LoadShare(db_thr_path + "_" + ToString(party_id), thr_sh);
+            sh_io.LoadShare(db_left_path + "_" + ToString(party_id), left_sh);
+            sh_io.LoadShare(db_right_path + "_" + ToString(party_id), right_sh);
+            sh_io.LoadShare(db_feat_path + "_" + ToString(party_id), feat_sh);
+            sh_io.LoadShare(db_label_path + "_" + ToString(party_id), label_sh);
             sh_io.LoadShare(idx_path + "_" + ToString(party_id), index_sh);
-            RepShareView64 db_view(database_sh);
+            RepShareView64 thr_view(thr_sh);
+            RepShareView64 left_view(left_sh);
+            RepShareView64 right_view(right_sh);
+            RepShareView64 feat_view(feat_sh);
+            RepShareView64 label_view(label_sh);
 
             std::vector<ringoa::block> uv_prev(1U << nu), uv_next(1U << nu);
 
@@ -913,23 +1015,9 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                 return sh;
             };
 
-            // 共有されたidxに公開値offsetを加算するヘルパー関数
-            // ノード情報は下記の形式で一本の配列で保持。
-            // database = [ threshold | left | right | feature_val | label ]
-            // 各情報の開始位置をoffsetとしている。
-            // - bench_threshold_offset   = 0
-            // - bench_left_offset        = node_count
-            // - bench_right_offset       = 2 * node_count
-            // - bench_feature_val_offset = 3 * node_count
-            // - bench_label_offset       = 4 * node_count
-            auto AddConstIdx = [&](const RepShare64 &idx, uint64_t offset, RepShare64 &out) {
-                RepShare64 off = MakePublicShare(offset);
-                rss.EvaluateAdd(idx, off, out);
-            };
-
             // 共有されたidxでDBにRingOAでアクセスして値を取り出す
-            auto ObliviousRead = [&](const RepShare64 &idx, RepShare64 &out) {
-                eval.Evaluate(chls, key, uv_prev, uv_next, db_view, idx, out);
+            auto ObliviousRead = [&](const RepShareView64 &view, const RepShare64 &idx, RepShare64 &out) {
+                eval.Evaluate(chls, key, uv_prev, uv_next, view, idx, out);
             };
 
             // ic_paramsはDCFで必要なパラメータ一式を格納
@@ -1016,28 +1104,28 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                     RepShare64 thr_idx, left_idx, right_idx, feature_val_idx;
                     RepShare64 thr_sh, left_sh, right_sh, feature_val;
 
-                    AddConstIdx(current_idx, bench_threshold_offset, thr_idx);
+                    thr_idx = current_idx;
                     
                     timer_mgr.Start();
-                    ObliviousRead(thr_idx, thr_sh);
+                    ObliviousRead(thr_view, thr_idx, thr_sh);
                     timer_mgr.Stop();
 
-                    AddConstIdx(current_idx, bench_left_offset, left_idx);
+                    left_idx = current_idx;
                     
                     timer_mgr.Start();
-                    ObliviousRead(left_idx, left_sh);
+                    ObliviousRead(left_view, left_idx, left_sh);
                     timer_mgr.Stop();
 
-                    AddConstIdx(current_idx, bench_right_offset, right_idx);
+                    right_idx = current_idx;
                     
                     timer_mgr.Start();
-                    ObliviousRead(right_idx, right_sh);
+                    ObliviousRead(right_view, right_idx, right_sh);
                     timer_mgr.Stop();
 
-                    AddConstIdx(current_idx, bench_feature_val_offset, feature_val_idx);
+                    feature_val_idx = current_idx;
                     
                     timer_mgr.Start();
-                    ObliviousRead(feature_val_idx, feature_val);
+                    ObliviousRead(feat_view, feature_val_idx, feature_val);
 
                     // DCFで使用。(特徴量の値-ノードの閾値)を計算
                     // DCFでは delta<0 かどうかを判定。その後、1 - cmp_bitに反転するから、最終的にはfeature_val < thr の判定ビット
@@ -1076,10 +1164,10 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
 
                 timer_mgr.Stop();
                 RepShare64 label_idx;
-                AddConstIdx(current_idx, bench_label_offset, label_idx);
+                label_idx = current_idx;
 
                 timer_mgr.Start();
-                ObliviousRead(label_idx, label_share);
+                ObliviousRead(label_view, label_idx, label_share);
 
                 uint64_t local_res = 0;
                 rss.Open(chls, label_share, local_res);
