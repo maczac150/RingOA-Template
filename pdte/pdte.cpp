@@ -80,7 +80,7 @@ constexpr uint64_t kBenchRepeatDefault = 5;
 constexpr uint32_t kBenchTreeDepth    = 10;
 constexpr uint64_t kBenchNodeCount    = 1ULL << kBenchTreeDepth;
 constexpr uint64_t kBenchFeatureCount = 4;
-constexpr uint32_t kBenchRingBits     = 28;
+constexpr uint32_t kBenchRingBits     = 33;
 constexpr uint32_t kBenchDbBits       = kBenchTreeDepth + 3;
 
 // feature vectorの要素はフィボナッチ数列とする
@@ -170,6 +170,23 @@ uint64_t EvaluateTreePlain(const std::vector<TreeNodePlain> &tree, const std::ve
 uint64_t EvaluateBenchTreePlain(const std::vector<TreeNodePlain> &tree, const std::vector<uint64_t> &features) {
     uint64_t idx = 0;
     for (uint32_t depth = 0; depth < kBenchTreeDepth; ++depth) {
+        const auto &node = tree[idx];
+        uint64_t     fid = node.feature_id % features.size();
+        uint64_t     fv  = features[fid];
+        bool         cmp = (fv < node.threshold);
+        uint64_t     next_idx = cmp ? node.left : node.right;
+        idx = next_idx;
+        if (idx >= tree.size())
+            idx = tree.size() - 1;
+    }
+    return tree[idx].label;
+}
+
+uint64_t EvaluateTreePlainDepth(const std::vector<TreeNodePlain> &tree,
+                                const std::vector<uint64_t> &features,
+                                uint32_t depth_max) {
+    uint64_t idx = 0;
+    for (uint32_t depth = 0; depth < depth_max; ++depth) {
         const auto &node = tree[idx];
         uint64_t     fid = node.feature_id % features.size();
         uint64_t     fv  = features[fid];
@@ -653,9 +670,17 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
     Logger::InfoLog(LOC, "Pdte_Offline_Bench...");
     TimerManager timer_mgr;
     uint64_t repeat = cmd.getOr("bench_repeat", kBenchRepeatDefault);
+    uint32_t bench_tree_depth = cmd.getOr("bench_depth", static_cast<int>(kBenchTreeDepth));
+    uint32_t bench_dbits = cmd.getOr("bench_dbits", static_cast<int>(kBenchDbBits));
+    uint32_t bench_ringbits = cmd.getOr("bench_ringbits", static_cast<int>(kBenchRingBits));
+    bool     use_external_db = cmd.hasValue("bench_db");
 
-    ShareConfig      share_config = ShareConfig::Custom(kBenchRingBits);
-    RingOaParameters ringoa_params(RingOaConfig(kBenchDbBits), share_config);
+    if (use_external_db && !cmd.hasValue("bench_depth")) {
+        throw std::runtime_error("bench_db requires --bench_depth to match the packed tree depth");
+    }
+
+    ShareConfig      share_config = ShareConfig::Custom(bench_ringbits);
+    RingOaParameters ringoa_params(RingOaConfig(bench_dbits), share_config);
     uint64_t         ring_bits = ringoa_params.GetParameters().GetInputBitsize();
     IntegerComparisonConfig ic_cfg;
     ic_cfg.input_domain_bits = ring_bits;
@@ -678,7 +703,15 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
     std::string dcf_key_pref   = kBenchRingOAPath + "pdte_dcf_key_";
     std::string dcf_trip_in    = kBenchRingOAPath + "pdte_dcf";
 
-    if ((1ULL << d) < kBenchLayoutEntries) {
+    uint64_t bench_node_count = 1ULL << bench_tree_depth;
+    uint64_t bench_threshold_offset  = 0;
+    uint64_t bench_left_offset       = bench_threshold_offset + bench_node_count;
+    uint64_t bench_right_offset      = bench_left_offset + bench_node_count;
+    uint64_t bench_feature_val_offset = bench_right_offset + bench_node_count;
+    uint64_t bench_label_offset      = bench_feature_val_offset + bench_node_count;
+    uint64_t bench_layout_entries    = bench_label_offset + bench_node_count;
+
+    if ((1ULL << d) < bench_layout_entries) {
         throw std::runtime_error("OA domain too small for PDTE layout");
     }
 
@@ -700,31 +733,46 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
 
     timer_mgr.SelectTimer(timer_datagen);
     timer_mgr.Start();
-    std::vector<TreeNodePlain> tree(kBenchNodeCount);
-    uint64_t leaf_label_counter = 1;
-    for (uint64_t i = 0; i < kBenchNodeCount; ++i) {
-        uint64_t left  = 2 * i + 1;
-        uint64_t right = 2 * i + 2;
-        bool     has_left = left < kBenchNodeCount;
-        bool     has_right = right < kBenchNodeCount;
-        tree[i].threshold  = 3 + (i % 4);
-        tree[i].feature_id = i % kBenchFeatureCount;
-        tree[i].left       = has_left ? left : i;
-        tree[i].right      = has_right ? right : i;
-        tree[i].label      = (has_left || has_right) ? 0 : leaf_label_counter++;
-    }
+    std::vector<uint64_t> database;
+    uint64_t expected = 0;
+    if (use_external_db) {
+        if (!cmd.hasValue("bench_expected")) {
+            throw std::runtime_error("bench_db requires --bench_expected for expected label");
+        }
+        std::string ext_db_path = cmd.get<std::string>("bench_db");
+        std::string ext_expected_path = cmd.get<std::string>("bench_expected");
+        file_io.ReadBinary(ext_db_path, database);
+        file_io.ReadBinary(ext_expected_path, expected);
+        if (database.size() != (1ULL << d)) {
+            throw std::runtime_error("bench_db size does not match --bench_dbits (2^d)");
+        }
+    } else {
+        std::vector<TreeNodePlain> tree(bench_node_count);
+        uint64_t leaf_label_counter = 1;
+        for (uint64_t i = 0; i < bench_node_count; ++i) {
+            uint64_t left  = 2 * i + 1;
+            uint64_t right = 2 * i + 2;
+            bool     has_left = left < bench_node_count;
+            bool     has_right = right < bench_node_count;
+            tree[i].threshold  = 3 + (i % 4);
+            tree[i].feature_id = i % kBenchFeatureCount;
+            tree[i].left       = has_left ? left : i;
+            tree[i].right      = has_right ? right : i;
+            tree[i].label      = (has_left || has_right) ? 0 : leaf_label_counter++;
+        }
 
-    std::vector<uint64_t> features = BuildBenchFeatureVector();
-    uint64_t expected = EvaluateBenchTreePlain(tree, features);
+        std::vector<uint64_t> features = BuildBenchFeatureVector();
+        expected = EvaluateTreePlainDepth(tree, features, bench_tree_depth);
 
-    std::vector<uint64_t> database(1ULL << d, 0);
-    for (uint64_t i = 0; i < kBenchNodeCount; ++i) {
-        database[kBenchThresholdOffset + i]  = tree[i].threshold;
-        database[kBenchLeftOffset + i]       = tree[i].left;
-        database[kBenchRightOffset + i]      = tree[i].right;
-        uint64_t fid = tree[i].feature_id % features.size();
-        database[kBenchFeatureValOffset + i] = features[fid];
-        database[kBenchLabelOffset + i]      = tree[i].label;
+        database.assign(1ULL << d, 0);
+        for (uint64_t i = 0; i < bench_node_count; ++i) {
+            database[bench_threshold_offset + i]  = tree[i].threshold;
+            database[bench_left_offset + i]       = tree[i].left;
+            database[bench_right_offset + i]      = tree[i].right;
+            uint64_t fid = tree[i].feature_id % features.size();
+            database[bench_feature_val_offset + i] = features[fid];
+            database[bench_label_offset + i]      = tree[i].label;
+        }
     }
 
     std::array<RepShareVec64, 3> database_sh = rss.ShareLocal(database);
@@ -746,12 +794,12 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
     timer_mgr.Start();
     auto &dcf_share = ic_ctx.Arith();
     const uint64_t base_budget =
-        std::max<uint64_t>(1ULL << 22, ic_params.GetInputDomainBits() * static_cast<uint64_t>(kBenchTreeDepth) * 4096ULL);
+        std::max<uint64_t>(1ULL << 22, ic_params.GetInputDomainBits() * static_cast<uint64_t>(bench_tree_depth) * 4096ULL);
     const uint64_t triple_budget = base_budget * repeat;
     dcf_share.OfflineSetUp(triple_budget, dcf_trip_in);
 
     const uint32_t offline_queries =
-        static_cast<uint32_t>(kBenchTreeDepth * 16 * repeat);
+        static_cast<uint32_t>(bench_tree_depth * 16 * repeat);
     ringoa_gen.OfflineSetUp(offline_queries, kBenchRingOAPath);
     rss.OfflineSetUp(kBenchRingOAPath + "prf");
     timer_mgr.Stop("d=" + ToString(d));
@@ -765,11 +813,14 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
     Logger::SetPrintLog(true);
     Logger::InfoLog(LOC, "Pdte_Online_Bench...");
     uint64_t repeat = cmd.getOr("bench_repeat", kBenchRepeatDefault);
+    uint32_t bench_tree_depth = cmd.getOr("bench_depth", static_cast<int>(kBenchTreeDepth));
+    uint32_t bench_dbits = cmd.getOr("bench_dbits", static_cast<int>(kBenchDbBits));
+    uint32_t bench_ringbits = cmd.getOr("bench_ringbits", static_cast<int>(kBenchRingBits));
     int party_id = cmd.isSet("party") ? cmd.get<int>("party") : -1;
     std::string network = cmd.isSet("network") ? cmd.get<std::string>("network") : "";
 
-    ShareConfig      share_config = ShareConfig::Custom(kBenchRingBits);
-    RingOaParameters params(RingOaConfig(kBenchDbBits), share_config);
+    ShareConfig      share_config = ShareConfig::Custom(bench_ringbits);
+    RingOaParameters params(RingOaConfig(bench_dbits), share_config);
     params.PrintParametersDebug();
     uint64_t d  = params.GetParameters().GetInputBitsize();
     IntegerComparisonConfig ic_cfg;
@@ -792,6 +843,16 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
     file_io.ReadBinary(db_path, database);
     file_io.ReadBinary(idx_path, index);
     file_io.ReadBinary(expected_path, expected_label);
+    if (database.size() != (1ULL << d)) {
+        throw std::runtime_error("bench database size does not match input bitsize");
+    }
+
+    uint64_t bench_node_count = 1ULL << bench_tree_depth;
+    uint64_t bench_threshold_offset  = 0;
+    uint64_t bench_left_offset       = bench_threshold_offset + bench_node_count;
+    uint64_t bench_right_offset      = bench_left_offset + bench_node_count;
+    uint64_t bench_feature_val_offset = bench_right_offset + bench_node_count;
+    uint64_t bench_label_offset      = bench_feature_val_offset + bench_node_count;
 
     auto MakeTask = [&](int party_id) {
         return [=, &result](osuCrypto::Channel &chl_next, osuCrypto::Channel &chl_prev) {
@@ -835,6 +896,7 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
 
             timer_mgr.Stop("d=" + ToString(d));
 
+            // 公開値をRSSの形式で各パーティに配布するヘルパー関数
             auto MakePublicShare = [&](uint64_t value) {
                 RepShare64 sh;
                 uint64_t   masked = Mod2N(value, d);
@@ -851,23 +913,46 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                 return sh;
             };
 
+            // 共有されたidxに公開値offsetを加算するヘルパー関数
+            // ノード情報は下記の形式で一本の配列で保持。
+            // database = [ threshold | left | right | feature_val | label ]
+            // 各情報の開始位置をoffsetとしている。
+            // - bench_threshold_offset   = 0
+            // - bench_left_offset        = node_count
+            // - bench_right_offset       = 2 * node_count
+            // - bench_feature_val_offset = 3 * node_count
+            // - bench_label_offset       = 4 * node_count
             auto AddConstIdx = [&](const RepShare64 &idx, uint64_t offset, RepShare64 &out) {
                 RepShare64 off = MakePublicShare(offset);
                 rss.EvaluateAdd(idx, off, out);
             };
 
+            // 共有されたidxでDBにRingOAでアクセスして値を取り出す
             auto ObliviousRead = [&](const RepShare64 &idx, RepShare64 &out) {
                 eval.Evaluate(chls, key, uv_prev, uv_next, db_view, idx, out);
             };
 
+            // ic_paramsはDCFで必要なパラメータ一式を格納
+            // dcf_in_bits:
+            //     --bench_dbits <n> を指定すればその値
+            //     指定しなければ kBenchDbBits
+            // dcf_out_bits:
+            //     --bench_ringbits <n> を指定すればその値
+            //     指定しなければ kBenchRingBits
             const uint64_t dcf_in_bits  = ic_params.GetInputDomainBits();
             const uint64_t dcf_out_bits = ic_params.GetDdcfOutputBitsize();
+
+            // 下位k bitsだけ取り出す。DCFの入出力でのみ使用される
+            // Mod2Nメソッドとほぼ同じことやってる
             auto MaskValue = [](uint64_t value, uint64_t bits) -> uint64_t {
                 if (bits >= 64)
                     return value;
                 uint64_t mask = (bits == 64) ? std::numeric_limits<uint64_t>::max() : ((1ULL << bits) - 1ULL);
                 return value & mask;
             };
+
+            // RSSシェア→2者間加法シェアの変換
+            // party2のシェアをparty0,1に配分
             auto ConvertReplicatedToAdditive = [&](const RepShare64 &sh, uint64_t &out) {
                 if (party_id == 2) {
                     uint64_t r = MaskValue(ringoa::GlobalRng::Rand<uint64_t>(), dcf_in_bits);
@@ -887,6 +972,8 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                 }
             };
 
+            // 2者間加法シェアからRSSへの変換
+            // p0,1のシェアを元に、新しいシェアs0,s1,s2を作成。各partyが2つずつ持つ
             auto ConvertSsBitToReplicated = [&](uint64_t local_share, RepShare64 &bit_sh) {
                 if (party_id == 0) {
                     uint64_t s0 = MaskValue(ringoa::GlobalRng::Rand<uint64_t>(), dcf_out_bits);
@@ -922,26 +1009,38 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
 
             timer_mgr.SelectTimer(timer_eval);
             for (uint64_t iter = 0; iter < repeat; ++iter) {
-                timer_mgr.Start();
                 RepShare64 current_idx = index_sh;
                 RepShare64 label_share;
 
-                for (uint32_t depth = 0; depth < kBenchTreeDepth; ++depth) {
+                for (uint32_t depth = 0; depth < bench_tree_depth; ++depth) {
                     RepShare64 thr_idx, left_idx, right_idx, feature_val_idx;
                     RepShare64 thr_sh, left_sh, right_sh, feature_val;
 
-                    AddConstIdx(current_idx, kBenchThresholdOffset, thr_idx);
+                    AddConstIdx(current_idx, bench_threshold_offset, thr_idx);
+                    
+                    timer_mgr.Start();
                     ObliviousRead(thr_idx, thr_sh);
+                    timer_mgr.Stop();
 
-                    AddConstIdx(current_idx, kBenchLeftOffset, left_idx);
+                    AddConstIdx(current_idx, bench_left_offset, left_idx);
+                    
+                    timer_mgr.Start();
                     ObliviousRead(left_idx, left_sh);
+                    timer_mgr.Stop();
 
-                    AddConstIdx(current_idx, kBenchRightOffset, right_idx);
+                    AddConstIdx(current_idx, bench_right_offset, right_idx);
+                    
+                    timer_mgr.Start();
                     ObliviousRead(right_idx, right_sh);
+                    timer_mgr.Stop();
 
-                    AddConstIdx(current_idx, kBenchFeatureValOffset, feature_val_idx);
+                    AddConstIdx(current_idx, bench_feature_val_offset, feature_val_idx);
+                    
+                    timer_mgr.Start();
                     ObliviousRead(feature_val_idx, feature_val);
 
+                    // DCFで使用。(特徴量の値-ノードの閾値)を計算
+                    // DCFでは delta<0 かどうかを判定。その後、1 - cmp_bitに反転するから、最終的にはfeature_val < thr の判定ビット
                     RepShare64 delta_sh;
                     rss.EvaluateSub(feature_val, thr_sh, delta_sh);
 
@@ -949,6 +1048,9 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                     uint64_t delta_part  = 0;
                     ConvertReplicatedToAdditive(delta_sh, delta_part);
 
+                    // party0,1,2が並列で実行される。
+                    // DCFはparty0,1のみで実行、party2は参加しない
+                    // ConvertSsBitToReplicated の中での通信で同期が行われる
                     if (party_id < 2) {
                         osuCrypto::Channel &dcf_chl = (party_id == 0) ? chls.next : chls.prev;
                         uint64_t              bit_share = dcf_eval->EvaluateSharedInput(dcf_chl, *dcf_key, delta_part, 0);
@@ -956,18 +1058,27 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                     } else {
                         ConvertSsBitToReplicated(0, cmp_bit);
                     }
+                    timer_mgr.Stop();
+
+                    // DCFでの比較結果と、今回使いたいcmp_bitの向きが違うので、1-cmp_bit でビット反転する
                     RepShare64 one_sh = MakePublicShare(1);
                     RepShare64 cmp_lt;
                     rss.EvaluateSub(one_sh, cmp_bit, cmp_lt);
                     cmp_bit = cmp_lt;
 
+                    timer_mgr.Start();
                     RepShare64 next_idx;
+                    // z = x + comp·(y − x)の計算
+                    // comp = 0ならx, 1ならy
                     rss.EvaluateSelect(chls, right_sh, left_sh, cmp_bit, next_idx);
                     current_idx = next_idx;
                 }
 
+                timer_mgr.Stop();
                 RepShare64 label_idx;
-                AddConstIdx(current_idx, kBenchLabelOffset, label_idx);
+                AddConstIdx(current_idx, bench_label_offset, label_idx);
+
+                timer_mgr.Start();
                 ObliviousRead(label_idx, label_share);
 
                 uint64_t local_res = 0;
