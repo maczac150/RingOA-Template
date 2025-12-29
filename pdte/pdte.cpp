@@ -77,11 +77,11 @@ constexpr uint64_t kFeatureCount = 4;
 constexpr uint32_t kRingBits     = 20;
 
 constexpr uint64_t kBenchRepeatDefault = 5;
-constexpr uint32_t kBenchTreeDepth    = 10;
-constexpr uint64_t kBenchNodeCount    = 1ULL << kBenchTreeDepth;
-constexpr uint64_t kBenchFeatureCount = 4;
-constexpr uint32_t kBenchRingBits     = 33;
-constexpr uint32_t kBenchDbBits       = kBenchTreeDepth + 3;
+constexpr uint32_t kBenchTreeDepth    = 10;  // 実際の木の深さで上書き
+constexpr uint64_t kBenchNodeCount    = 1ULL << kBenchTreeDepth;  // 同上
+constexpr uint64_t kBenchFeatureCount = 4;  // ダミー生成用。実際のDB使うときは使用されない変数
+constexpr uint32_t kBenchRingBits     = 33;  // LAN.sh、WAN.shに影響
+constexpr uint32_t kBenchDbBits       = kBenchTreeDepth + 3;  // 実際のノード数(paddingは除外)以上で最小となる2のべき乗
 
 // feature vectorの要素はフィボナッチ数列とする
 std::vector<uint64_t> BuildFeatureVector() {
@@ -751,9 +751,11 @@ void Pdte_Offline_Bench(const osuCrypto::CLP &cmd) {
     std::string expected_label = kBenchRingOAPath + "pdte_expected_d" + ToString(d);
     std::string dcf_key_pref   = kBenchRingOAPath + "pdte_dcf_key_";
     std::string dcf_trip_in    = kBenchRingOAPath + "pdte_dcf";
-    uint64_t bench_node_count = 1ULL << bench_tree_depth;
-    if ((1ULL << d) < bench_node_count) {
-        throw std::runtime_error("OA domain too small for PDTE layout");
+    const uint64_t bench_node_count = 1ULL << bench_tree_depth;
+    if (!use_external_db) {
+        if ((1ULL << d) < bench_node_count) {
+            throw std::runtime_error("OA domain too small for PDTE layout");
+        }
     }
 
     int32_t timer_keygen = timer_mgr.CreateNewTimer("KeyGen");
@@ -1108,24 +1110,26 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                     
                     timer_mgr.Start();
                     ObliviousRead(thr_view, thr_idx, thr_sh);
-                    timer_mgr.Stop();
+                    timer_mgr.Stop("RingOA:threshold");
 
                     left_idx = current_idx;
                     
                     timer_mgr.Start();
                     ObliviousRead(left_view, left_idx, left_sh);
-                    timer_mgr.Stop();
+                    timer_mgr.Stop("RingOA:left");
 
                     right_idx = current_idx;
                     
                     timer_mgr.Start();
                     ObliviousRead(right_view, right_idx, right_sh);
-                    timer_mgr.Stop();
+                    timer_mgr.Stop("RingOA:right");
 
                     feature_val_idx = current_idx;
                     
                     timer_mgr.Start();
                     ObliviousRead(feat_view, feature_val_idx, feature_val);
+                    timer_mgr.Stop("RingOA:feature_val");
+                    timer_mgr.Start();
 
                     // DCFで使用。(特徴量の値-ノードの閾値)を計算
                     // DCFでは delta<0 かどうかを判定。その後、1 - cmp_bitに反転するから、最終的にはfeature_val < thr の判定ビット
@@ -1146,7 +1150,7 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                     } else {
                         ConvertSsBitToReplicated(0, cmp_bit);
                     }
-                    timer_mgr.Stop();
+                    timer_mgr.Stop("a");
 
                     // DCFでの比較結果と、今回使いたいcmp_bitの向きが違うので、1-cmp_bit でビット反転する
                     RepShare64 one_sh = MakePublicShare(1);
@@ -1160,9 +1164,8 @@ void Pdte_Online_Bench(const osuCrypto::CLP &cmd) {
                     // comp = 0ならx, 1ならy
                     rss.EvaluateSelect(chls, right_sh, left_sh, cmp_bit, next_idx);
                     current_idx = next_idx;
+                    timer_mgr.Stop("b");
                 }
-
-                timer_mgr.Stop();
                 RepShare64 label_idx;
                 label_idx = current_idx;
 
